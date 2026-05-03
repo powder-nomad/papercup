@@ -1,0 +1,34 @@
+{
+  "name": "papercup",
+  "version": "0.1.0",
+  "description": "Voice interface to Claude Code via Discord. Local-only voice stack (Silero VAD + Whisper + Kokoro). Speaker agent + background extension subagents in sandboxes.",
+  "author": {
+    "name": "Paul Kim"
+  },
+  "homepage": "https://github.com/powder-nomad/papercup",
+  "repository": "https://github.com/powder-nomad/papercup",
+  "license": "MIT",
+  "keywords": [
+    "discord",
+    "voice",
+    "claude-code",
+    "agent",
+    "tts",
+    "stt",
+    "vad",
+    "kokoro",
+    "whisper",
+    "silero"
+  ],
+  "commands": [
+    "./commands/setup.md",
+    "./commands/start.md",
+    "./commands/stop.md",
+    "./commands/status.md",
+    "./commands/logs.md",
+    "./commands/update.md"
+  ],
+  "skills": [
+    "./skills/papercup/SKILL.md"
+  ]
+}

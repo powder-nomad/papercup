@@ -1,0 +1,30 @@
+{
+  "name": "@papercup/voice-stack",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local voice + extension stack: Silero VAD, Whisper STT, Kokoro TTS, and a sandboxed Claude Code extension manager exposed via MCP. Reusable across Papercup bot, OpenClaw plugin, and other consumers.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./vad": "./src/vad/silero.ts",
+    "./stt": "./src/stt/whisper.ts",
+    "./tts": "./src/tts/index.ts",
+    "./audio": "./src/audio/index.ts",
+    "./extensions": "./src/extensions/manager.ts",
+    "./extensions/mcp": "./src/extensions/mcp-server.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^5.2.1",
+    "onnxruntime-node": "^1.20.1",
+    "prism-media": "^1.3.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6"
+  }
+}

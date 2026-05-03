@@ -1,0 +1,38 @@
+{
+  "id": "papercup-voice",
+  "label": "Papercup voice (Kokoro TTS, local)",
+  "description": "Server-side local TTS for OpenClaw. Wraps Papercup's Kokoro sidecar so any OpenClaw channel (Discord, Slack, etc.) can synthesize voice without cloud API calls.",
+  "kind": "provider",
+  "providers": ["papercup-kokoro"],
+  "enabledByDefault": false,
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "voice": {
+        "type": "string",
+        "default": "af_heart",
+        "description": "Kokoro voice id. See https://github.com/powder-nomad/papercup for the full list."
+      },
+      "speed": {
+        "type": "number",
+        "minimum": 0.5,
+        "maximum": 2.0,
+        "default": 1.0
+      },
+      "lang": {
+        "type": "string",
+        "default": "en-us",
+        "description": "Kokoro language code (en-us, en-gb, ja, zh, es, fr, hi, it, pt-br)"
+      },
+      "modelPath": {
+        "type": "string",
+        "description": "Override path to kokoro-v1.0.onnx. Defaults to the @papercup/voice-stack package's models/ dir."
+      },
+      "voicesPath": {
+        "type": "string",
+        "description": "Override path to kokoro-voices-v1.0.bin."
+      }
+    },
+    "additionalProperties": false
+  }
+}

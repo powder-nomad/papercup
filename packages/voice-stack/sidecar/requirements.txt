@@ -1,0 +1,9 @@
+faster-whisper>=1.0.3
+kokoro-onnx>=0.5.0
+numpy>=1.26
+soundfile>=0.12
+
+# MeloTTS is NOT installed via this requirements file. Upstream pins
+# transformers==4.27.4 → tokenizers 0.13.x → no cp312 wheel → broken Rust
+# build. install.sh runs sidecar/install-melotts.sh instead, which clones
+# MeloTTS, unpins transformers, and adds the other CPU/PyTorch workarounds.

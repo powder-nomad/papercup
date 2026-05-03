@@ -1,0 +1,15 @@
+{
+  "name": "@papercup/openclaw-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenClaw plugin — adds server-side voice (Silero+Whisper+Kokoro) to OpenClaw's Discord channel adapter. Stub.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@papercup/voice-stack": "*",
+    "openclaw": "^2026.4.29"
+  }
+}

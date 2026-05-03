@@ -1,0 +1,30 @@
+{
+  "name": "papercup-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Voice interface to Claude Code via Discord — local voice stack (Silero+Whisper+Kokoro), Claude Code/Codex/Anthropic agent backends, extension subagents in sandboxes. Monorepo with voice-stack (shared), bot (Discord bot + CC plugin), and openclaw-plugin (OpenClaw integration).",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/voice-stack",
+    "packages/bot",
+    "packages/openclaw-plugin"
+  ],
+  "scripts": {
+    "start": "npm run --workspace=@papercup/bot start",
+    "register": "npm run --workspace=@papercup/bot register",
+    "dev": "npm run --workspace=@papercup/bot dev",
+    "typecheck": "npm run --workspaces --if-present typecheck",
+    "download-models": "bash packages/voice-stack/scripts/download-models.sh",
+    "setup-venv": "python3 -m venv packages/voice-stack/sidecar/.venv && packages/voice-stack/sidecar/.venv/bin/pip install -r packages/voice-stack/sidecar/requirements.txt"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitepress": "^1.6.4",
+    "vue": "^3.5.33"
+  }
+}

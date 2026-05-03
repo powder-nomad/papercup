@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Ops helper for the Papercup bot.
+#   bin/papercup start     — launch in background
+#   bin/papercup stop      — kill it
+#   bin/papercup restart   — stop, then start
+#   bin/papercup status    — show pid + uptime
+#   bin/papercup logs      — tail -F the log
+#   bin/papercup tail [N]  — last N lines (default 50)
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+PID_FILE="$ROOT/logs/bot.pid"
+LOG_FILE="$ROOT/logs/bot.log"
+mkdir -p "$ROOT/logs"
+
+is_running() {
+  [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+}
+
+start() {
+  if is_running; then
+    echo "already running (pid $(cat "$PID_FILE"))"
+    return 0
+  fi
+  setsid bash -c "exec npm run --silent start >> '$LOG_FILE' 2>&1" </dev/null >/dev/null 2>&1 &
+  local pid=$!
+  disown
+  echo "$pid" > "$PID_FILE"
+  sleep 2
+  if is_running; then
+    echo "started pid $pid, logging to $LOG_FILE"
+  else
+    echo "failed to start — see $LOG_FILE"; return 1
+  fi
+}
+
+stop() {
+  if ! is_running; then
+    echo "not running"
+    rm -f "$PID_FILE"
+    return 0
+  fi
+  local pid
+  pid=$(cat "$PID_FILE")
+  # Kill the npm-run child tree, not just the wrapper.
+  pkill -P "$pid" 2>/dev/null || true
+  kill "$pid" 2>/dev/null || true
+  # Belt-and-suspenders: any leftover tsx for this project.
+  pkill -f "tsx src/index.ts" 2>/dev/null || true
+  rm -f "$PID_FILE"
+  echo "stopped"
+}
+
+status() {
+  if is_running; then
+    local pid
+    pid=$(cat "$PID_FILE")
+    echo "running (pid $pid)"
+    ps -o pid,etime,cmd -p "$pid" 2>/dev/null || true
+    echo
+    echo "child processes:"
+    pgrep -fa "tsx src/index.ts" || echo "  (none)"
+  else
+    echo "stopped"
+  fi
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+  start)   start ;;
+  stop)    stop ;;
+  restart) stop; sleep 1; start ;;
+  status)  status ;;
+  logs)    touch "$LOG_FILE"; tail -F "$LOG_FILE" ;;
+  tail)    n="${2:-50}"; tail -n "$n" "$LOG_FILE" ;;
+  *) echo "usage: bin/papercup {start|stop|restart|status|logs|tail [N]}"; exit 2 ;;
+esac
