@@ -103,6 +103,31 @@
 @media (min-width: 760px) {
   .pc-section { padding: 56px 28px; }
 }
+
+/*
+ * Code blocks inside layout=page sections (landing, /ko/) miss vp-doc's
+ * default `pre { overflow-x: auto }`, so wide content (the ASCII flow
+ * diagram, long install commands) pushed the whole page wider than the
+ * viewport on mobile — opening the navbar drawer revealed content peeking
+ * past the right edge. Constrain every code block under .pc-section.
+ */
+.pc-section pre,
+.pc-section .language-sh,
+.pc-section .language- ,
+.pc-section [class*="language-"] {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.pc-section pre code {
+  display: inline-block;
+  min-width: 0;
+}
+/* Tables in layout=page sections also need to scroll, not push the page */
+.pc-section table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
 .pc-section h2 {
   font-size: clamp(1.6rem, 2.5vw, 2rem);
   letter-spacing: -0.01em;
