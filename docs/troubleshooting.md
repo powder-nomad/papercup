@@ -51,9 +51,23 @@ Per-turn breakdown in logs:
 
 The agent step usually dominates with CLI backends. Switch to `AGENT_BACKEND=anthropic-api` with an API key for ~5s/turn savings.
 
-### Korean / non-English not transcribed
+### Korean / non-English not transcribed or spoken
 
-`WHISPER_MODEL=base.en` is English-only. Switch to `base` for multilingual. Note: Kokoro doesn't have Korean voices, so the speaker will respond in English (or fail the language match) for Korean input.
+For multilingual STT: `WHISPER_MODEL=small` (default for the auto/melotts/xtts TTS path) auto-detects 99 languages. `base.en` is English-only; if you see English transcripts when speaking Korean, you're on `base.en` — switch to `small` (better) or `base` (lighter).
+
+For Korean output: set `TTS_ENGINE=auto` and pick the Korean engine via `TTS_KO_ENGINE=melotts` (faster, monotone) or `TTS_KO_ENGINE=xtts` (heavier, ~58 speakers, voice cloning). Kokoro alone can't speak Korean.
+
+See [Korean](/components/korean) for the deep dive on tradeoffs.
+
+### MeloTTS install fails
+
+Upstream pins old `transformers==4.27.4` → `tokenizers 0.13.x` has no cp312 wheel → broken Rust source build. Don't `pip install` MeloTTS directly — use the helper:
+
+```sh
+bash packages/voice-stack/sidecar/install-melotts.sh packages/voice-stack/sidecar/.venv
+```
+
+It clones MeloTTS, unpins `transformers`, pre-installs CPU-only torch (avoids 3GB CUDA pull), and handles the post-install dance (setuptools<81 for `pkg_resources`, librosa bump, unidic dict download).
 
 ### Capture loop stops responding mid-call
 

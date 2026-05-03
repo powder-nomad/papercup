@@ -5,7 +5,8 @@ The form on the [home page](/) generates a `bash <(curl ...)` command preconfigu
 ```sh
 bash <(curl -fsSL https://raw.githubusercontent.com/powder-nomad/papercup/main/install.sh) \
   --agent claude-code \
-  --stt whisper-base.en \
+  --stt whisper-small \
+  --tts auto \
   --voice af_heart
 ```
 
@@ -23,10 +24,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/powder-nomad/papercup/main/i
 --anthropic-api-key <k>   Required only if --agent=anthropic-api
 
 --vad <name>              silero (default; only option today)
---stt <name>              whisper-base.en (default) | whisper-base |
-                          whisper-small.en | whisper-small
---tts <name>              kokoro (default; only option today)
---voice <name>            af_heart (default) — see Kokoro voices below
+--stt <name>              whisper-small (default for multilingual TTS) |
+                          whisper-base (default for kokoro-only) |
+                          whisper-small.en | whisper-base.en
+--tts <name>              auto (default — Kokoro + Korean engine routing) |
+                          kokoro (no Korean) | melotts (Korean, monotone) |
+                          xtts (Korean, ~58 speakers, voice cloning)
+--voice <name>            af_heart (default) — Kokoro voice. See voices below
 
 --silence-ms <int>        End-of-utterance silence (ms). Default: 600
 --vad-threshold <float>   Speech probability threshold. Default: 0.4
@@ -42,16 +46,17 @@ bash <(curl -fsSL https://raw.githubusercontent.com/powder-nomad/papercup/main/i
 
 The script is idempotent. Re-run it any time with different flags to reconfigure.
 
-1. **Sanity check**: node 20+, python3, espeak-ng, claude/codex CLI present (warns if not)
+1. **Sanity check**: node 20+, python3, espeak-ng, claude/codex CLI present (warns if not). Extra apt-deps check (libmecab-dev, libssl-dev, pkg-config) when MeloTTS is in scope.
 2. **Clone or update** `powder-nomad/papercup` into `--dir`
 3. **Discord credentials**: takes from flags, then existing `.env`, then prompts
 4. **Write `packages/bot/.env`** with everything you specified
 5. **`npm install`** at the workspace root
 6. **Python venv** at `packages/voice-stack/sidecar/.venv` (slowest step, ~700MB of wheels)
-7. **Download models** (Silero VAD, Kokoro TTS, Kokoro voices — ~355MB)
-8. **Register slash commands** with your Discord server
-9. **Print capability matrix** (which languages/voices actually work end-to-end)
-10. **Start the daemon**
+7. **MeloTTS install** (only when `--tts auto` or `--tts melotts`) via `install-melotts.sh` helper — adds ~1.3GB (torch+BERT). Handles upstream pin issues automatically.
+8. **Download models** (Silero VAD, Kokoro TTS, Kokoro voices — ~355MB)
+9. **Register slash commands** with your Discord server
+10. **Print capability matrix** (which languages/voices actually work end-to-end)
+11. **Start the daemon**
 
 ## After install
 

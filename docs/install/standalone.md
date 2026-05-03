@@ -33,6 +33,28 @@ packages/voice-stack/sidecar/.venv/bin/pip install -r packages/voice-stack/sidec
 
 Pulls faster-whisper + kokoro-onnx + their deps. ~700 MB. A few minutes on first install.
 
+## 4b. (Optional) Install Korean TTS engine
+
+Skip if you only want Kokoro (English / 7 other langs). For Korean TTS pick one:
+
+```sh
+# MeloTTS (lighter, monotone, single voice)
+bash packages/voice-stack/sidecar/install-melotts.sh packages/voice-stack/sidecar/.venv
+
+# XTTS-v2 (heavier, ~58 voices, voice cloning)
+packages/voice-stack/sidecar/.venv/bin/pip install --no-cache-dir coqui-tts "transformers>=4.46,<5"
+```
+
+Set the corresponding env vars in `packages/bot/.env`:
+
+```env
+TTS_ENGINE=auto         # routes Korean to TTS_KO_ENGINE, others to Kokoro
+TTS_KO_ENGINE=melotts   # or xtts
+WHISPER_MODEL=small     # multilingual STT
+```
+
+See [Korean (and other languages)](/components/korean) for the deep dive.
+
 ## 5. Voice models
 
 ```sh

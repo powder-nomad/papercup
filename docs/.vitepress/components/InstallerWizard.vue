@@ -7,7 +7,7 @@ const model = ref("haiku");
 const anthropicKey = ref("");
 
 const stt = ref<"whisper-base.en" | "whisper-base" | "whisper-small.en" | "whisper-small">("whisper-small");
-const tts = ref<"kokoro" | "melotts" | "auto">("auto");
+const tts = ref<"kokoro" | "melotts" | "xtts" | "auto">("auto");
 const voice = ref("af_heart");
 
 const installDir = ref("$HOME/papercup");
@@ -91,9 +91,10 @@ const copy = async () => {
 
       <fieldset>
         <legend>Text-to-speech</legend>
-        <label><input type="radio" v-model="tts" value="auto" /> auto <span class="hint">— route by detected language: Korean → MeloTTS, others → Kokoro (recommended)</span></label>
-        <label><input type="radio" v-model="tts" value="kokoro" /> kokoro <span class="hint">— en/ja/zh/es/fr/hi/it/pt only. Lighter, no PyTorch dep.</span></label>
-        <label><input type="radio" v-model="tts" value="melotts" /> melotts <span class="hint">— Korean and others. Heavier (~700MB extra for PyTorch).</span></label>
+        <label><input type="radio" v-model="tts" value="auto" /> auto <span class="hint">— Kokoro for English/JP/ZH/etc; routes Korean to your chosen Korean engine (recommended)</span></label>
+        <label><input type="radio" v-model="tts" value="kokoro" /> kokoro <span class="hint">— en/ja/zh/es/fr/hi/it/pt only. Lightest, no Korean.</span></label>
+        <label><input type="radio" v-model="tts" value="melotts" /> melotts <span class="hint">— Korean (one monotone voice). ~1.5GB extra for PyTorch+BERT.</span></label>
+        <label><input type="radio" v-model="tts" value="xtts" /> xtts <span class="hint">— Korean (~58 voices, voice cloning). ~3GB RAM, slower (RTF~3) but expressive.</span></label>
 
         <label class="row">
           Default Kokoro voice
@@ -105,10 +106,13 @@ const copy = async () => {
           Kokoro v1.0: English (US/UK), Japanese, Mandarin, Spanish, French, Hindi, Italian, Brazilian Portuguese. <strong>No Korean.</strong>
         </p>
         <p class="hint" v-else-if="tts === 'melotts'">
-          MeloTTS pinned to Korean by default. Override via <code>MELOTTS_LANG</code>.
+          MeloTTS pinned to Korean by default. Override via <code>MELOTTS_LANG</code>. Single speaker; sounds news-anchor-flat.
+        </p>
+        <p class="hint" v-else-if="tts === 'xtts'">
+          Coqui XTTS-v2. Pick a built-in speaker via <code>XTTS_SPEAKER</code> or clone any voice via <code>XTTS_REFERENCE_WAV</code>.
         </p>
         <p class="hint" v-else>
-          MeloTTS lazy-boots on first non-English/JA/ZH/etc utterance, so all-English sessions don't pay the cost.
+          The Korean engine pre-warms at startup so the first KR call doesn't pause. Pick MeloTTS for lighter, XTTS for voice variety.
         </p>
       </fieldset>
 

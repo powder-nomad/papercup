@@ -12,20 +12,25 @@ Default model is now `WHISPER_MODEL=base` (multilingual). Whisper auto-detects t
 
 `base` is slightly slower than `base.en` (~0.4 RTF vs 0.3 on a 4-core CPU) but accurate enough for Korean. Bump to `WHISPER_MODEL=small` if accuracy matters; `small.en` is English-only and faster.
 
-## TTS: MeloTTS (because Kokoro doesn't ship Korean)
+## TTS: MeloTTS or XTTS-v2 (Kokoro doesn't ship Korean)
 
-Kokoro v1.0 supports 9 languages — Korean isn't one of them. So Korean output uses **MeloTTS** (MyShell, MIT license), pinned to its Korean model.
+Kokoro v1.0 supports 9 languages — Korean isn't one of them. Two Korean engines ship:
 
-The recommended `TTS_ENGINE=auto` configuration runs both engines and routes per-utterance based on Whisper's detected language:
+| Engine | Voices | RTF (4-core CPU) | RAM | Tradeoff |
+| --- | --- | --- | --- | --- |
+| **MeloTTS** | 1 (monotone) | ~2.3× | ~1.5 GB | Lighter, faster, but the voice sounds news-anchor-flat |
+| **XTTS-v2** | ~58 built-in + voice cloning from a 6s clip | ~3× | ~3 GB | Heavier, slower, expressive — real choice over voices |
+
+The recommended `TTS_ENGINE=auto` configuration runs both Kokoro and your chosen Korean engine, routing per-utterance based on Whisper's detected language:
 
 | Detected language | Engine |
 | --- | --- |
-| `ko` | MeloTTS (Korean) |
+| `ko` | MeloTTS or XTTS (picked via `TTS_KO_ENGINE=melotts\|xtts`) |
 | everything else | Kokoro |
 
-MeloTTS is **lazy-booted** — the Python+PyTorch+BERT-Korean stack only loads on the first Korean utterance. English-only sessions don't pay the cost.
+The Korean engine **pre-warms in the background by default** (`MELOTTS_PREWARM=1` / `XTTS_PREWARM=1`) so the first KR call doesn't pay the model load. Set `MELOTTS_PREWARM=0` / `XTTS_PREWARM=0` if you want lazy boot instead.
 
-First Korean utterance: ~30-60s pause while MeloTTS boots. Subsequent: ~0.5-1.0 RTF (real-time on CPU).
+Pre-warmed boot times: MeloTTS ~17s, XTTS ~30s. Lazy first-call boot is the same numbers, just paid mid-conversation.
 
 ## Agent: matches user's language
 

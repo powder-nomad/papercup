@@ -22,11 +22,15 @@ Per-turn loop on a 4-core CPU homelab:
 | Stage | Cost |
 | --- | --- |
 | End-of-utterance silence | `SILENCE_MS=600` |
-| Whisper STT (`base.en` int8) | ~0.3-0.5 RTF |
+| Whisper STT (`small` int8) | ~0.5-0.8 RTF (multilingual default) |
+| Whisper STT (`base.en` int8) | ~0.3-0.5 RTF (English-only path) |
 | Speaker agent | ~5-8s for CLI backends, ~0.5-1.5s for direct API |
-| Kokoro TTS | ~0.5-0.85 RTF |
+| Kokoro TTS (en/ja/zh/es/fr/hi/it/pt) | ~0.5-0.85 RTF |
+| MeloTTS (Korean, monotone) | ~2.3 RTF |
+| XTTS-v2 (Korean, ~58 speakers) | ~2.5-3.0 RTF |
 | Playback start | ~200ms |
-| **Total** | **~3-8s typical** |
+| **Total (English path)** | **~3-8s typical** |
+| **Total (Korean path)** | **~10-25s typical** (TTS dominates) |
 
 The CLI backends dominate. If you have an Anthropic API key, `AGENT_BACKEND=anthropic-api` cuts ~5s off every turn.
 
