@@ -70,6 +70,28 @@ const commands = [
     .setDescription("(Admin) Unbind the bot — falls back to @mention triggers across all channels")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName("model")
+    .setDescription("Set the agent model for the active session (e.g. claude-opus-4-7)")
+    .addStringOption((o) =>
+      o
+        .setName("name")
+        .setDescription("Model id (claude-opus-4-7, claude-sonnet-4-6, haiku, …). Leave blank to clear override.")
+        .setRequired(false)
+        .setMaxLength(80),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("notify")
+    .setDescription("Toggle TTS notification when a spawned extension finishes")
+    .addStringOption((o) =>
+      o
+        .setName("state")
+        .setDescription("on or off")
+        .setRequired(true)
+        .addChoices({ name: "on", value: "on" }, { name: "off", value: "off" }),
+    )
+    .toJSON(),
 ];
 
 const rest = new REST({ version: "10" }).setToken(token);

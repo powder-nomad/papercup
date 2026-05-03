@@ -15,6 +15,17 @@ export type Session = {
   backendId?: string;
   /** Which backend created this session. Used to refuse cross-backend resume. */
   backend?: string;
+  /**
+   * Per-session model override (e.g. claude-opus-4-7). Falls back to
+   * AGENT_MODEL env if undefined. Lets you flip a single session into
+   * vibecoding mode without changing global config.
+   */
+  model?: string;
+  /**
+   * Speak a short notification through TTS when a spawned extension
+   * completes. Default is undefined → off; explicit true/false persists.
+   */
+  notify?: boolean;
 };
 
 type Persisted = { sessions: Session[] };
@@ -95,6 +106,28 @@ export class SessionStore {
     s.backendId = backendId;
     if (backend) s.backend = backend;
     await this.save();
+  }
+
+  async setModel(id: string, model: string | undefined): Promise<Session | undefined> {
+    const s = this.sessions.find((s) => s.id === id);
+    if (!s) return undefined;
+    if (model === undefined || model.trim() === "") {
+      delete s.model;
+    } else {
+      s.model = model.trim();
+    }
+    s.lastActiveAt = Date.now();
+    await this.save();
+    return s;
+  }
+
+  async setNotify(id: string, on: boolean): Promise<Session | undefined> {
+    const s = this.sessions.find((s) => s.id === id);
+    if (!s) return undefined;
+    s.notify = on;
+    s.lastActiveAt = Date.now();
+    await this.save();
+    return s;
   }
 
   async rename(id: string, newName: string): Promise<Session> {

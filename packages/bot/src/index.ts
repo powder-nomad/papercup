@@ -33,7 +33,7 @@ import {
   stereo48kS16ToMono16kF32,
   mono24kS16ToStereo48kS16,
 } from "@papercup/voice-stack/audio";
-import { ExtensionManager } from "@papercup/voice-stack/extensions";
+import { ExtensionManager, type Extension } from "@papercup/voice-stack/extensions";
 import { ExtensionMcpServer } from "@papercup/voice-stack/extensions/mcp";
 import { SpeakerAgent } from "./agent/speaker.js";
 import { SessionStore, type Session } from "./session/store.js";
@@ -121,6 +121,15 @@ if (boundTextChannelId) {
 await extensions.load();
 console.log(`[extensions] loaded ${extensions.list().length} record(s)`);
 
+extensions.on("settled", (ext) => {
+  // Speak a one-line completion notice into any active voice line whose
+  // session has /notify on. Stays silent for guilds that haven't opted in.
+  for (const [, state] of lines) {
+    if (!state.session.notify) continue;
+    void announceExtensionSettled(state, ext);
+  }
+});
+
 const mcpInfo = await extMcp.start();
 process.env.PAPERCUP_MCP_URL = mcpInfo.url;
 console.log(`[mcp] tools available at ${mcpInfo.url}`);
@@ -145,6 +154,10 @@ client.on("interactionCreate", async (interaction) => {
       await handleBind(interaction);
     } else if (interaction.commandName === "unbind") {
       await handleUnbind(interaction);
+    } else if (interaction.commandName === "model") {
+      await handleModel(interaction);
+    } else if (interaction.commandName === "notify") {
+      await handleNotify(interaction);
     }
   } catch (err) {
     console.error(`handler error on /${interaction.commandName}:`, err);
@@ -241,7 +254,7 @@ async function joinAndStart(
   // Resume uses whatever id the backend recorded last time (might differ from
   // session.id for backends like codex that assign their own thread UUID).
   const startSessionId = resume ? (session.backendId ?? session.id) : session.id;
-  await agent.start({ sessionId: startSessionId, resume });
+  await agent.start({ sessionId: startSessionId, resume, model: session.model });
   await sessions.touch(session.id);
 
   const state: LineState = {
@@ -365,6 +378,73 @@ async function handleUnbind(interaction: ChatInputCommandInteraction): Promise<v
   await guildConfig.clearBoundChannel(interaction.guildId);
   console.log(`[unbind] guild ${interaction.guildId} unbound by ${member.user.tag}`);
   await interaction.editReply("🔓 Unbound. Bot now responds to @mentions across all channels.");
+}
+
+async function handleModel(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.editReply("Not in a guild.");
+    return;
+  }
+  const state = lines.get(guildId);
+  if (!state) {
+    await interaction.editReply("No active line. /pickup first, then /model.");
+    return;
+  }
+
+  const requested = interaction.options.getString("name") ?? "";
+  const updated = await sessions.setModel(state.session.id, requested);
+  if (!updated) {
+    await interaction.editReply("Couldn't update session — record missing.");
+    return;
+  }
+  state.session = updated;
+
+  // Re-start the agent under the new model. Backend resume keeps history.
+  try {
+    state.agent.stop?.();
+  } catch { /* fine */ }
+  state.agent = new SpeakerAgent();
+  const startSessionId = state.session.backendId ?? state.session.id;
+  await state.agent.start({ sessionId: startSessionId, resume: true, model: updated.model });
+  await syncBackendId(state);
+
+  if (updated.model) {
+    await interaction.editReply(`🧠 Model for "${updated.name}" → \`${updated.model}\`. History preserved.`);
+  } else {
+    await interaction.editReply(`🧠 Model override cleared for "${updated.name}". Falls back to AGENT_MODEL env (\`${process.env.AGENT_MODEL ?? "default"}\`).`);
+  }
+}
+
+async function handleNotify(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.editReply("Not in a guild.");
+    return;
+  }
+  const state = lines.get(guildId);
+  if (!state) {
+    await interaction.editReply("No active line. /pickup first, then /notify.");
+    return;
+  }
+
+  const wantOn = interaction.options.getString("state", true) === "on";
+  const updated = await sessions.setNotify(state.session.id, wantOn);
+  if (!updated) {
+    await interaction.editReply("Couldn't update session — record missing.");
+    return;
+  }
+  state.session = updated;
+
+  await interaction.editReply(
+    wantOn
+      ? `🔔 Extension-completion TTS notifications are now ON for "${updated.name}".`
+      : `🔕 Notifications OFF for "${updated.name}".`,
+  );
 }
 
 async function syncBackendId(state: LineState): Promise<void> {
@@ -596,6 +676,34 @@ function beginCaptureLoop(state: LineState): void {
   };
 
   captureOnce();
+}
+
+async function announceExtensionSettled(state: LineState, ext: Extension): Promise<void> {
+  // Pick a short, informative utterance. The user named the extension during
+  // /spawn, so leaning on that is more useful than the raw task text.
+  const label = ext.name || ext.task.slice(0, 60);
+  const seconds = ext.durationMs ? Math.round(ext.durationMs / 1000) : 0;
+  const minutes = Math.floor(seconds / 60);
+  const human =
+    minutes >= 1 ? `${minutes} minute${minutes === 1 ? "" : "s"}` : `${seconds} seconds`;
+  const text =
+    ext.status === "completed"
+      ? `Heads up — ${label} just finished after ${human}. Want the rundown?`
+      : ext.status === "failed"
+      ? `${label} failed after ${human}. Check the logs when you have a sec.`
+      : `${label} got interrupted before it finished.`;
+
+  console.log(`[notify] announcing ${ext.id} (${ext.status}) → ${text.slice(0, 60)}`);
+
+  let synth;
+  try {
+    synth = await tts.synthesize(text);
+  } catch (err) {
+    console.error("[notify] synth failed:", err);
+    return;
+  }
+  const stereo48k = mono24kS16ToStereo48kS16(synth.pcm);
+  playBack(state, stereo48k);
 }
 
 function playBack(state: LineState, pcm: Buffer): void {

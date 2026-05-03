@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -29,8 +30,13 @@ const STORE_PATH = path.join(process.cwd(), "data", "extensions.json");
  * Spawns and tracks background Claude Code processes. Each extension lives in
  * its own sandbox dir under data/extensions/<id>/. Bot-process-bound: if the
  * bot dies, in-flight extensions die too (marked "interrupted" on next boot).
+ *
+ * Events:
+ *  - "settled" → (ext: Extension) — fired when an extension exits the
+ *    "running" state (status becomes completed | failed | interrupted).
+ *    Used by the bot to optionally TTS-announce completion to the user.
  */
-export class ExtensionManager {
+export class ExtensionManager extends EventEmitter {
   private extensions = new Map<string, Extension>();
   private procs = new Map<string, ChildProcess>();
   private loaded = false;
@@ -110,6 +116,7 @@ export class ExtensionManager {
       ext.finishedAt = Date.now();
       this.procs.delete(id);
       void this.persist();
+      this.emit("settled", ext);
     });
 
     proc.on("exit", (code) => {
@@ -133,6 +140,7 @@ export class ExtensionManager {
       }
       console.log(`[ext ${id}] ${ext.status} in ${ext.durationMs}ms`);
       void this.persist();
+      this.emit("settled", ext);
     });
 
     return ext;

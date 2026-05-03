@@ -62,6 +62,8 @@ function pickDefaultBackend(): string {
 export type SpeakerAgentOpts = {
   sessionId?: string;
   resume?: boolean;
+  /** Per-session model override; falls back to AGENT_MODEL env. */
+  model?: string;
 };
 
 export class SpeakerAgent {
@@ -76,7 +78,7 @@ export class SpeakerAgent {
     if (this.started) return;
     await this.backend.start({
       systemPrompt: SYSTEM_PROMPT,
-      model: process.env.AGENT_MODEL,
+      model: opts.model ?? process.env.AGENT_MODEL,
       maxTokens: process.env.AGENT_MAX_TOKENS ? Number(process.env.AGENT_MAX_TOKENS) : undefined,
       sessionId: opts.sessionId,
       resume: opts.resume,
