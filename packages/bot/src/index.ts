@@ -160,6 +160,8 @@ client.on("interactionCreate", async (interaction) => {
       await handleUnbind(interaction);
     } else if (interaction.commandName === "model") {
       await handleModel(interaction);
+    } else if (interaction.commandName === "effort") {
+      await handleEffort(interaction);
     } else if (interaction.commandName === "notify") {
       await handleNotify(interaction);
     }
@@ -209,13 +211,14 @@ async function handlePickup(interaction: ChatInputCommandInteraction): Promise<v
 async function startTextSession(
   interaction: ChatInputCommandInteraction,
   session: Session,
+  resume = false,
 ): Promise<void> {
   if (!interaction.guild) {
     await interaction.editReply("Use /pickup mode:text in a guild text channel.");
     return;
   }
 
-  // Replace any auto-spawned chat for this channel — explicit takes over.
+  // Replace any auto-spawned or prior chat for this channel.
   const existing = textChats.get(interaction.channelId);
   if (existing) {
     try { existing.agent.stop?.(); } catch { /* ignore */ }
@@ -223,19 +226,24 @@ async function startTextSession(
   }
 
   const agent = new SpeakerAgent();
+  const startSessionId = resume ? (session.backendId ?? session.id) : session.id;
   await agent.start({
-    sessionId: session.id,
-    resume: false,
+    sessionId: startSessionId,
+    resume,
     model: session.model,
     effort: session.effort,
   });
   textChats.set(interaction.channelId, { session, agent });
+  await sessions.touch(session.id);
   console.log(
-    `[text-chat] /pickup mode:text "${session.name}" model=${session.model ?? "(default)"} effort=${session.effort ?? "(default)"} channel=${interaction.channelId}`,
+    `[text-chat] ${resume ? "resume" : "/pickup"} mode:text "${session.name}" model=${session.model ?? "(default)"} effort=${session.effort ?? "(default)"} channel=${interaction.channelId}`,
   );
 
+  const verb = resume ? "Resumed" : "active";
   const lines: string[] = [
-    `📝 Text session **${session.name}** active in this channel.`,
+    resume
+      ? `🔁 Text session **${session.name}** ${verb} in this channel.`
+      : `📝 Text session **${session.name}** ${verb} in this channel.`,
     `Send messages here and I'll reply in text — no voice join.`,
   ];
   if (session.model) lines.push(`Model: \`${session.model}\``);
@@ -250,6 +258,32 @@ async function handleResume(interaction: ChatInputCommandInteraction): Promise<v
   const session = sessions.findByName(name);
   if (!session) {
     await interaction.editReply(`No session named "${name}". Try /sessions to see what's available.`);
+    return;
+  }
+
+  // Auto-mode: pick voice or text based on context.
+  // 1. If a voice line is active in this guild → resume into voice
+  // 2. Else if a text chat is active in this channel → resume into text
+  // 3. Else use the saved Session.mode
+  // 4. Else default to voice (legacy behavior — needs to be in a voice channel)
+  const guildId = interaction.guildId;
+  const channelId = interaction.channelId;
+  const activeVoice = guildId ? lines.has(guildId) : false;
+  const activeText = textChats.has(channelId);
+
+  let mode: "voice" | "text";
+  if (activeVoice) {
+    mode = "voice";
+  } else if (activeText) {
+    mode = "text";
+  } else {
+    mode = session.mode ?? "voice";
+  }
+
+  console.log(`[resume] "${session.name}" → ${mode} (activeVoice=${activeVoice} activeText=${activeText} sessMode=${session.mode ?? "(unset)"})`);
+
+  if (mode === "text") {
+    await startTextSession(interaction, session, true);
     return;
   }
   await joinAndStart(interaction, session, true);
@@ -476,37 +510,8 @@ function findActiveContainer(interaction: ChatInputCommandInteraction): ActiveCo
   return undefined;
 }
 
-async function handleModel(interaction: ChatInputCommandInteraction): Promise<void> {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-  const active = findActiveContainer(interaction);
-  if (!active) {
-    await interaction.editReply("No active session. /pickup first, then /model.");
-    return;
-  }
-
-  const session = active.kind === "voice" ? active.state.session : active.chat.session;
-  const modelInput = interaction.options.getString("name");
-  const effortInput = interaction.options.getString("effort") as
-    | "minimal" | "low" | "medium" | "high" | "xhigh" | "default" | null;
-
-  // At least one option must be provided.
-  if (modelInput === null && effortInput === null) {
-    await interaction.editReply("Pass `name:` (model) or `effort:` (or both).");
-    return;
-  }
-
-  if (modelInput !== null) {
-    const updated = await sessions.setModel(session.id, modelInput);
-    if (updated) Object.assign(session, updated);
-  }
-  if (effortInput !== null) {
-    const value = effortInput === "default" ? undefined : effortInput;
-    const updated = await sessions.setEffort(session.id, value);
-    if (updated) Object.assign(session, updated);
-  }
-
-  // Hot-swap the agent. Backend resume preserves history.
+async function hotSwapAgent(active: ActiveContainer, session: Session): Promise<void> {
+  // Re-start the agent under the new model/effort. Backend resume preserves history.
   if (active.kind === "voice") {
     try { active.state.agent.stop?.(); } catch { /* fine */ }
     active.state.agent = new SpeakerAgent();
@@ -529,11 +534,62 @@ async function handleModel(interaction: ChatInputCommandInteraction): Promise<vo
       effort: session.effort,
     });
   }
+}
 
-  const parts: string[] = [];
-  parts.push(session.model ? `model \`${session.model}\`` : "model (env default)");
-  parts.push(session.effort ? `effort \`${session.effort}\`` : "effort (default)");
-  await interaction.editReply(`🧠 "${session.name}" → ${parts.join(", ")}. History preserved.`);
+async function handleModel(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session. /pickup first, then /model.");
+    return;
+  }
+
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
+  const requested = interaction.options.getString("name") ?? "";
+  const updated = await sessions.setModel(session.id, requested);
+  if (!updated) {
+    await interaction.editReply("Couldn't update session — record missing.");
+    return;
+  }
+  Object.assign(session, updated);
+
+  await hotSwapAgent(active, session);
+
+  if (session.model) {
+    await interaction.editReply(`🧠 "${session.name}" model → \`${session.model}\`. History preserved.`);
+  } else {
+    await interaction.editReply(`🧠 "${session.name}" model override cleared. Falls back to AGENT_MODEL env (\`${process.env.AGENT_MODEL ?? "default"}\`).`);
+  }
+}
+
+async function handleEffort(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session. /pickup first, then /effort.");
+    return;
+  }
+
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
+  const level = interaction.options.getString("level", true) as
+    | "minimal" | "low" | "medium" | "high" | "xhigh" | "default";
+  const value = level === "default" ? undefined : level;
+  const updated = await sessions.setEffort(session.id, value);
+  if (!updated) {
+    await interaction.editReply("Couldn't update session — record missing.");
+    return;
+  }
+  Object.assign(session, updated);
+
+  await hotSwapAgent(active, session);
+
+  if (session.effort) {
+    await interaction.editReply(`🧠 "${session.name}" effort → \`${session.effort}\`. History preserved.`);
+  } else {
+    await interaction.editReply(`🧠 "${session.name}" effort cleared (backend default).`);
+  }
 }
 
 async function handleNotify(interaction: ChatInputCommandInteraction): Promise<void> {

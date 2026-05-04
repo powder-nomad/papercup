@@ -99,7 +99,7 @@ const commands = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName("model")
-    .setDescription("Set the agent model and/or reasoning effort for the active session")
+    .setDescription("Set the agent model for the active session (e.g. claude-opus-4-7)")
     .addStringOption((o) =>
       o
         .setName("name")
@@ -107,16 +107,21 @@ const commands = [
         .setRequired(false)
         .setMaxLength(80),
     )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("effort")
+    .setDescription("Set the reasoning effort for the active session")
     .addStringOption((o) =>
       o
-        .setName("effort")
-        .setDescription("Reasoning effort — minimal/low/medium/high, or 'default' to clear")
-        .setRequired(false)
+        .setName("level")
+        .setDescription("Reasoning effort. 'default' clears the override.")
+        .setRequired(true)
         .addChoices(
           { name: "minimal", value: "minimal" },
           { name: "low", value: "low" },
           { name: "medium", value: "medium" },
           { name: "high", value: "high" },
+          { name: "xhigh (Opus only)", value: "xhigh" },
           { name: "default", value: "default" },
         ),
     )
