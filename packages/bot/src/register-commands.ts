@@ -70,6 +70,13 @@ const commands = [
     .setDescription("Hang up — bot leaves the voice channel; session is preserved")
     .toJSON(),
   new SlashCommandBuilder()
+    .setName("new")
+    .setDescription("Start a fresh session in the active container, inheriting model/effort/permissions")
+    .addStringOption((o) =>
+      o.setName("name").setDescription("Optional name for the new session").setRequired(false).setMaxLength(60),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName("resume")
     .setDescription("Resume an existing session by name")
     .addStringOption((o) =>

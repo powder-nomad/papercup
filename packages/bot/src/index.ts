@@ -187,6 +187,8 @@ client.on("interactionCreate", async (interaction) => {
       await handleBind(interaction);
     } else if (interaction.commandName === "unbind") {
       await handleUnbind(interaction);
+    } else if (interaction.commandName === "new") {
+      await handleNew(interaction);
     } else if (interaction.commandName === "model") {
       await handleModel(interaction);
     } else if (interaction.commandName === "effort") {
@@ -456,6 +458,79 @@ async function handleHangup(interaction: ChatInputCommandInteraction): Promise<v
   await interaction.editReply("No active line or text session here.");
 }
 
+async function handleNew(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const guildId = interaction.guildId;
+  const channelId = interaction.channelId;
+  if (!guildId) {
+    await interaction.editReply("Not in a guild.");
+    return;
+  }
+
+  const voice = lines.get(guildId);
+  const chat = textChats.get(channelId);
+  if (!voice && !chat) {
+    await interaction.editReply("No active session. /pickup first, then /new.");
+    return;
+  }
+
+  // Inherit knobs from the current session — but not notify (per-conversation).
+  const prior = voice ? voice.session : chat!.session;
+  const desiredName = interaction.options.getString("name") ?? undefined;
+
+  const fresh = await sessions.create({ name: desiredName });
+  if (prior.mode) await sessions.setMode(fresh.id, prior.mode);
+  if (prior.model) await sessions.setModel(fresh.id, prior.model);
+  if (prior.effort) await sessions.setEffort(fresh.id, prior.effort);
+  if (prior.permissionMode) await sessions.setPermissionMode(fresh.id, prior.permissionMode);
+  // Refresh from store so all the persisted values land on the in-memory object.
+  const refreshed = sessions.findByName(fresh.name) ?? fresh;
+  Object.assign(fresh, refreshed);
+
+  if (voice) {
+    // Replace the voice line's agent + session in place; keep the connection.
+    try { voice.agent.stop?.(); } catch { /* ignore */ }
+    voice.agent = new SpeakerAgent();
+    await voice.agent.start({
+      sessionId: fresh.id,
+      resume: false,
+      model: fresh.model,
+      effort: fresh.effort,
+      permissionMode: fresh.permissionMode,
+      mode: "voice",
+    });
+    voice.session = fresh;
+    await sessions.touch(fresh.id);
+    console.log(`[new] voice line replaced — "${prior.name}" → "${fresh.name}" (inherited model=${fresh.model ?? "(default)"} effort=${fresh.effort ?? "(default)"})`);
+    await interaction.editReply(
+      `🎤 Fresh voice session **${fresh.name}** active. Inherited from "${prior.name}":` +
+      `${fresh.model ? `\nModel: \`${fresh.model}\`` : ""}` +
+      `${fresh.effort ? `\nEffort: \`${fresh.effort}\`` : ""}` +
+      `${fresh.permissionMode ? `\nPermissions: \`${fresh.permissionMode}\`` : ""}`,
+    );
+  } else if (chat) {
+    try { chat.agent.stop?.(); } catch { /* ignore */ }
+    const agent = new SpeakerAgent();
+    await agent.start({
+      sessionId: fresh.id,
+      resume: false,
+      model: fresh.model,
+      effort: fresh.effort,
+      permissionMode: fresh.permissionMode,
+      mode: "text",
+    });
+    textChats.set(channelId, { session: fresh, agent });
+    await sessions.touch(fresh.id);
+    console.log(`[new] text chat replaced — "${prior.name}" → "${fresh.name}" (inherited model=${fresh.model ?? "(default)"} effort=${fresh.effort ?? "(default)"})`);
+    await interaction.editReply(
+      `📝 Fresh text session **${fresh.name}** active. Inherited from "${prior.name}":` +
+      `${fresh.model ? `\nModel: \`${fresh.model}\`` : ""}` +
+      `${fresh.effort ? `\nEffort: \`${fresh.effort}\`` : ""}` +
+      `${fresh.permissionMode ? `\nPermissions: \`${fresh.permissionMode}\`` : ""}`,
+    );
+  }
+}
 
 async function handleSessions(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
