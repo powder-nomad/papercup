@@ -31,6 +31,14 @@ export type AgentBackendOpts = {
   sessionId?: string;
   /** True if the session already exists and we should resume it. */
   resume?: boolean;
+  /**
+   * Reasoning-effort hint. Each backend translates to its own knob:
+   * - claude-code  → `--reason-effort <level>` flag
+   * - anthropic-api → maps to thinking.budget_tokens (minimal=disabled,
+   *   low≈1024, medium≈4096, high≈16384)
+   * - codex        → ignored (no native equivalent today)
+   */
+  effort?: "minimal" | "low" | "medium" | "high";
 };
 
 export interface AgentBackend {

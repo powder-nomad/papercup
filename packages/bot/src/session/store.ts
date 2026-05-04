@@ -26,7 +26,22 @@ export type Session = {
    * completes. Default is undefined → off; explicit true/false persists.
    */
   notify?: boolean;
+  /**
+   * Reasoning-effort hint for the backend. Maps to `--reason-effort` on
+   * Claude Code CLI and to `thinking.budget_tokens` for the direct API
+   * backend. minimal | low | medium | high.
+   */
+  effort?: "minimal" | "low" | "medium" | "high";
+  /**
+   * "voice" if the session was created via /pickup mode:voice (default),
+   * "text" if mode:text. Stored only for display/resume hints — the actual
+   * routing is decided by which container (voice line vs text chat) is
+   * active when a message arrives.
+   */
+  mode?: "voice" | "text";
 };
+
+export type SessionEffort = NonNullable<Session["effort"]>;
 
 type Persisted = { sessions: Session[] };
 
@@ -125,6 +140,28 @@ export class SessionStore {
     const s = this.sessions.find((s) => s.id === id);
     if (!s) return undefined;
     s.notify = on;
+    s.lastActiveAt = Date.now();
+    await this.save();
+    return s;
+  }
+
+  async setEffort(id: string, effort: SessionEffort | undefined): Promise<Session | undefined> {
+    const s = this.sessions.find((s) => s.id === id);
+    if (!s) return undefined;
+    if (effort === undefined) {
+      delete s.effort;
+    } else {
+      s.effort = effort;
+    }
+    s.lastActiveAt = Date.now();
+    await this.save();
+    return s;
+  }
+
+  async setMode(id: string, mode: "voice" | "text"): Promise<Session | undefined> {
+    const s = this.sessions.find((s) => s.id === id);
+    if (!s) return undefined;
+    s.mode = mode;
     s.lastActiveAt = Date.now();
     await this.save();
     return s;

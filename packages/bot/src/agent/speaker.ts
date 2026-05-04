@@ -64,6 +64,8 @@ export type SpeakerAgentOpts = {
   resume?: boolean;
   /** Per-session model override; falls back to AGENT_MODEL env. */
   model?: string;
+  /** Reasoning-effort hint; backend-specific translation. */
+  effort?: "minimal" | "low" | "medium" | "high";
 };
 
 export class SpeakerAgent {
@@ -82,6 +84,7 @@ export class SpeakerAgent {
       maxTokens: process.env.AGENT_MAX_TOKENS ? Number(process.env.AGENT_MAX_TOKENS) : undefined,
       sessionId: opts.sessionId,
       resume: opts.resume,
+      effort: opts.effort,
     });
     this.started = true;
   }

@@ -122,11 +122,15 @@ await extensions.load();
 console.log(`[extensions] loaded ${extensions.list().length} record(s)`);
 
 extensions.on("settled", (ext) => {
-  // Speak a one-line completion notice into any active voice line whose
-  // session has /notify on. Stays silent for guilds that haven't opted in.
+  // Voice lines: speak a one-line completion notice if /notify is on.
   for (const [, state] of lines) {
     if (!state.session.notify) continue;
-    void announceExtensionSettled(state, ext);
+    void announceExtensionSettledVoice(state, ext);
+  }
+  // Text chats: drop a Discord message in the channel if /notify is on.
+  for (const [channelId, chat] of textChats) {
+    if (!chat.session.notify) continue;
+    void announceExtensionSettledText(channelId, chat, ext);
   }
 });
 
@@ -182,8 +186,62 @@ process.on("uncaughtException", (err) => console.error("uncaughtException:", err
 async function handlePickup(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const name = interaction.options.getString("name") ?? undefined;
+  const mode = (interaction.options.getString("mode") ?? "voice") as "voice" | "text";
+  const model = interaction.options.getString("model") ?? undefined;
+  const effort = interaction.options.getString("effort") as
+    | "minimal" | "low" | "medium" | "high" | null;
+
   const session = await sessions.create({ name });
-  await joinAndStart(interaction, session, false);
+  if (model) await sessions.setModel(session.id, model);
+  if (effort) await sessions.setEffort(session.id, effort);
+  await sessions.setMode(session.id, mode);
+  // Refresh from store so we pass the persisted values into the agent.
+  const fresh = sessions.findByName(session.name) ?? session;
+  Object.assign(session, fresh);
+
+  if (mode === "text") {
+    await startTextSession(interaction, session);
+  } else {
+    await joinAndStart(interaction, session, false);
+  }
+}
+
+async function startTextSession(
+  interaction: ChatInputCommandInteraction,
+  session: Session,
+): Promise<void> {
+  if (!interaction.guild) {
+    await interaction.editReply("Use /pickup mode:text in a guild text channel.");
+    return;
+  }
+
+  // Replace any auto-spawned chat for this channel — explicit takes over.
+  const existing = textChats.get(interaction.channelId);
+  if (existing) {
+    try { existing.agent.stop?.(); } catch { /* ignore */ }
+    textChats.delete(interaction.channelId);
+  }
+
+  const agent = new SpeakerAgent();
+  await agent.start({
+    sessionId: session.id,
+    resume: false,
+    model: session.model,
+    effort: session.effort,
+  });
+  textChats.set(interaction.channelId, { session, agent });
+  console.log(
+    `[text-chat] /pickup mode:text "${session.name}" model=${session.model ?? "(default)"} effort=${session.effort ?? "(default)"} channel=${interaction.channelId}`,
+  );
+
+  const lines: string[] = [
+    `📝 Text session **${session.name}** active in this channel.`,
+    `Send messages here and I'll reply in text — no voice join.`,
+  ];
+  if (session.model) lines.push(`Model: \`${session.model}\``);
+  if (session.effort) lines.push(`Effort: \`${session.effort}\``);
+  lines.push(`Toggle extension-completion alerts with \`/notify state:on\`. End with \`/hangup\`.`);
+  await interaction.editReply(lines.join("\n"));
 }
 
 async function handleResume(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -254,7 +312,12 @@ async function joinAndStart(
   // Resume uses whatever id the backend recorded last time (might differ from
   // session.id for backends like codex that assign their own thread UUID).
   const startSessionId = resume ? (session.backendId ?? session.id) : session.id;
-  await agent.start({ sessionId: startSessionId, resume, model: session.model });
+  await agent.start({
+    sessionId: startSessionId,
+    resume,
+    model: session.model,
+    effort: session.effort,
+  });
   await sessions.touch(session.id);
 
   const state: LineState = {
@@ -288,15 +351,28 @@ async function handleHangup(interaction: ChatInputCommandInteraction): Promise<v
   }
   const state = lines.get(guildId);
   const conn = state?.connection ?? getVoiceConnection(guildId);
-  if (!conn) {
-    await interaction.editReply("No active line.");
+
+  // Voice line, if any.
+  if (conn) {
+    conn.destroy();
+    lines.delete(guildId);
+    const sessName = state ? `"${state.session.name}"` : "";
+    await interaction.editReply(`Hung up${sessName ? ` — ${sessName} preserved` : ""}.`);
     return;
   }
-  conn.destroy();
-  lines.delete(guildId);
-  const sessName = state ? `"${state.session.name}"` : "";
-  await interaction.editReply(`Hung up${sessName ? ` — ${sessName} preserved` : ""}.`);
+
+  // No voice — close the text chat for this channel if one exists.
+  const chat = textChats.get(interaction.channelId);
+  if (chat) {
+    try { chat.agent.stop?.(); } catch { /* ignore */ }
+    textChats.delete(interaction.channelId);
+    await interaction.editReply(`📝 Text session "${chat.session.name}" closed — preserved for /resume.`);
+    return;
+  }
+
+  await interaction.editReply("No active line or text session here.");
 }
+
 
 async function handleSessions(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -380,70 +456,109 @@ async function handleUnbind(interaction: ChatInputCommandInteraction): Promise<v
   await interaction.editReply("🔓 Unbound. Bot now responds to @mentions across all channels.");
 }
 
+/**
+ * Find whichever container is active for a slash-command interaction:
+ * a voice line (per-guild) or a text chat (per-channel). Voice takes
+ * precedence — once /pickup mode:voice is active, /model and /notify
+ * apply to the call, not to a stale text chat in the same channel.
+ */
+type ActiveContainer =
+  | { kind: "voice"; state: LineState }
+  | { kind: "text"; chat: TextChat; channelId: string };
+
+function findActiveContainer(interaction: ChatInputCommandInteraction): ActiveContainer | undefined {
+  if (interaction.guildId) {
+    const state = lines.get(interaction.guildId);
+    if (state) return { kind: "voice", state };
+  }
+  const chat = textChats.get(interaction.channelId);
+  if (chat) return { kind: "text", chat, channelId: interaction.channelId };
+  return undefined;
+}
+
 async function handleModel(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const guildId = interaction.guildId;
-  if (!guildId) {
-    await interaction.editReply("Not in a guild.");
-    return;
-  }
-  const state = lines.get(guildId);
-  if (!state) {
-    await interaction.editReply("No active line. /pickup first, then /model.");
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session. /pickup first, then /model.");
     return;
   }
 
-  const requested = interaction.options.getString("name") ?? "";
-  const updated = await sessions.setModel(state.session.id, requested);
-  if (!updated) {
-    await interaction.editReply("Couldn't update session — record missing.");
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
+  const modelInput = interaction.options.getString("name");
+  const effortInput = interaction.options.getString("effort") as
+    | "minimal" | "low" | "medium" | "high" | "default" | null;
+
+  // At least one option must be provided.
+  if (modelInput === null && effortInput === null) {
+    await interaction.editReply("Pass `name:` (model) or `effort:` (or both).");
     return;
   }
-  state.session = updated;
 
-  // Re-start the agent under the new model. Backend resume keeps history.
-  try {
-    state.agent.stop?.();
-  } catch { /* fine */ }
-  state.agent = new SpeakerAgent();
-  const startSessionId = state.session.backendId ?? state.session.id;
-  await state.agent.start({ sessionId: startSessionId, resume: true, model: updated.model });
-  await syncBackendId(state);
+  if (modelInput !== null) {
+    const updated = await sessions.setModel(session.id, modelInput);
+    if (updated) Object.assign(session, updated);
+  }
+  if (effortInput !== null) {
+    const value = effortInput === "default" ? undefined : effortInput;
+    const updated = await sessions.setEffort(session.id, value);
+    if (updated) Object.assign(session, updated);
+  }
 
-  if (updated.model) {
-    await interaction.editReply(`🧠 Model for "${updated.name}" → \`${updated.model}\`. History preserved.`);
+  // Hot-swap the agent. Backend resume preserves history.
+  if (active.kind === "voice") {
+    try { active.state.agent.stop?.(); } catch { /* fine */ }
+    active.state.agent = new SpeakerAgent();
+    const startSessionId = session.backendId ?? session.id;
+    await active.state.agent.start({
+      sessionId: startSessionId,
+      resume: true,
+      model: session.model,
+      effort: session.effort,
+    });
+    await syncBackendId(active.state);
   } else {
-    await interaction.editReply(`🧠 Model override cleared for "${updated.name}". Falls back to AGENT_MODEL env (\`${process.env.AGENT_MODEL ?? "default"}\`).`);
+    try { active.chat.agent.stop?.(); } catch { /* fine */ }
+    active.chat.agent = new SpeakerAgent();
+    const startSessionId = session.backendId ?? session.id;
+    await active.chat.agent.start({
+      sessionId: startSessionId,
+      resume: true,
+      model: session.model,
+      effort: session.effort,
+    });
   }
+
+  const parts: string[] = [];
+  parts.push(session.model ? `model \`${session.model}\`` : "model (env default)");
+  parts.push(session.effort ? `effort \`${session.effort}\`` : "effort (default)");
+  await interaction.editReply(`🧠 "${session.name}" → ${parts.join(", ")}. History preserved.`);
 }
 
 async function handleNotify(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const guildId = interaction.guildId;
-  if (!guildId) {
-    await interaction.editReply("Not in a guild.");
-    return;
-  }
-  const state = lines.get(guildId);
-  if (!state) {
-    await interaction.editReply("No active line. /pickup first, then /notify.");
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session. /pickup first, then /notify.");
     return;
   }
 
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
   const wantOn = interaction.options.getString("state", true) === "on";
-  const updated = await sessions.setNotify(state.session.id, wantOn);
+  const updated = await sessions.setNotify(session.id, wantOn);
   if (!updated) {
     await interaction.editReply("Couldn't update session — record missing.");
     return;
   }
-  state.session = updated;
+  Object.assign(session, updated);
 
+  const surface = active.kind === "voice" ? "voice TTS" : "channel text";
   await interaction.editReply(
     wantOn
-      ? `🔔 Extension-completion TTS notifications are now ON for "${updated.name}".`
-      : `🔕 Notifications OFF for "${updated.name}".`,
+      ? `🔔 Extension-completion alerts ON for "${session.name}" — delivered as ${surface}.`
+      : `🔕 Alerts OFF for "${session.name}".`,
   );
 }
 
@@ -548,11 +663,17 @@ async function handleTextOnlyChat(msg: Message, userText: string): Promise<void>
   if (!chat) {
     const channelName = "name" in msg.channel ? (msg.channel as { name: string }).name : msg.channelId;
     const session = await sessions.create({ name: `chat-${channelName}` });
+    await sessions.setMode(session.id, "text");
     const agent = new SpeakerAgent();
-    await agent.start({ sessionId: session.id, resume: false });
+    await agent.start({
+      sessionId: session.id,
+      resume: false,
+      model: session.model,
+      effort: session.effort,
+    });
     chat = { session, agent };
     textChats.set(msg.channelId, chat);
-    console.log(`[text-chat] new session "${session.name}" for channel ${msg.channelId}`);
+    console.log(`[text-chat] auto-spawn "${session.name}" for channel ${msg.channelId}`);
   }
 
   const tStart = Date.now();
@@ -678,32 +799,49 @@ function beginCaptureLoop(state: LineState): void {
   captureOnce();
 }
 
-async function announceExtensionSettled(state: LineState, ext: Extension): Promise<void> {
-  // Pick a short, informative utterance. The user named the extension during
-  // /spawn, so leaning on that is more useful than the raw task text.
+function extensionSettledText(ext: Extension): string {
   const label = ext.name || ext.task.slice(0, 60);
   const seconds = ext.durationMs ? Math.round(ext.durationMs / 1000) : 0;
   const minutes = Math.floor(seconds / 60);
   const human =
     minutes >= 1 ? `${minutes} minute${minutes === 1 ? "" : "s"}` : `${seconds} seconds`;
-  const text =
-    ext.status === "completed"
-      ? `Heads up — ${label} just finished after ${human}. Want the rundown?`
-      : ext.status === "failed"
-      ? `${label} failed after ${human}. Check the logs when you have a sec.`
-      : `${label} got interrupted before it finished.`;
+  return ext.status === "completed"
+    ? `Heads up — ${label} just finished after ${human}. Want the rundown?`
+    : ext.status === "failed"
+    ? `${label} failed after ${human}. Check the logs when you have a sec.`
+    : `${label} got interrupted before it finished.`;
+}
 
-  console.log(`[notify] announcing ${ext.id} (${ext.status}) → ${text.slice(0, 60)}`);
-
+async function announceExtensionSettledVoice(state: LineState, ext: Extension): Promise<void> {
+  const text = extensionSettledText(ext);
+  console.log(`[notify:voice] ${ext.id} (${ext.status}) → ${text.slice(0, 60)}`);
   let synth;
   try {
     synth = await tts.synthesize(text);
   } catch (err) {
-    console.error("[notify] synth failed:", err);
+    console.error("[notify:voice] synth failed:", err);
     return;
   }
   const stereo48k = mono24kS16ToStereo48kS16(synth.pcm);
   playBack(state, stereo48k);
+}
+
+async function announceExtensionSettledText(
+  channelId: string,
+  chat: TextChat,
+  ext: Extension,
+): Promise<void> {
+  const text = extensionSettledText(ext);
+  console.log(`[notify:text] ${ext.id} (${ext.status}) → ${text.slice(0, 60)} (chat=${chat.session.name})`);
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (channel && "send" in channel) {
+      const summaryLine = ext.summary ? `\n> ${ext.summary.slice(0, 400)}${ext.summary.length > 400 ? "…" : ""}` : "";
+      await channel.send(`🔔 ${text}${summaryLine}`);
+    }
+  } catch (err) {
+    console.error("[notify:text] send failed:", err);
+  }
 }
 
 function playBack(state: LineState, pcm: Buffer): void {

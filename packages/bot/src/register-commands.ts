@@ -19,9 +19,35 @@ if (!token || !clientId || !guildId) {
 const commands = [
   new SlashCommandBuilder()
     .setName("pickup")
-    .setDescription("Pick up the cup — start a new conversation")
+    .setDescription("Pick up the cup — start a new conversation (voice or text)")
     .addStringOption((o) =>
       o.setName("name").setDescription("Optional name for this session").setRequired(false).setMaxLength(60),
+    )
+    .addStringOption((o) =>
+      o
+        .setName("mode")
+        .setDescription("voice (default; joins your voice channel) or text (no voice join)")
+        .setRequired(false)
+        .addChoices({ name: "voice", value: "voice" }, { name: "text", value: "text" }),
+    )
+    .addStringOption((o) =>
+      o
+        .setName("model")
+        .setDescription("Agent model id (e.g. claude-opus-4-7). Falls back to AGENT_MODEL env.")
+        .setRequired(false)
+        .setMaxLength(80),
+    )
+    .addStringOption((o) =>
+      o
+        .setName("effort")
+        .setDescription("Reasoning effort (high uses more thinking tokens, slower but smarter)")
+        .setRequired(false)
+        .addChoices(
+          { name: "minimal", value: "minimal" },
+          { name: "low", value: "low" },
+          { name: "medium", value: "medium" },
+          { name: "high", value: "high" },
+        ),
     )
     .toJSON(),
   new SlashCommandBuilder()
@@ -72,13 +98,26 @@ const commands = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName("model")
-    .setDescription("Set the agent model for the active session (e.g. claude-opus-4-7)")
+    .setDescription("Set the agent model and/or reasoning effort for the active session")
     .addStringOption((o) =>
       o
         .setName("name")
         .setDescription("Model id (claude-opus-4-7, claude-sonnet-4-6, haiku, …). Leave blank to clear override.")
         .setRequired(false)
         .setMaxLength(80),
+    )
+    .addStringOption((o) =>
+      o
+        .setName("effort")
+        .setDescription("Reasoning effort — minimal/low/medium/high, or 'default' to clear")
+        .setRequired(false)
+        .addChoices(
+          { name: "minimal", value: "minimal" },
+          { name: "low", value: "low" },
+          { name: "medium", value: "medium" },
+          { name: "high", value: "high" },
+          { name: "default", value: "default" },
+        ),
     )
     .toJSON(),
   new SlashCommandBuilder()
