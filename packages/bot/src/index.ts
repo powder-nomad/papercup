@@ -261,26 +261,37 @@ async function handleResume(interaction: ChatInputCommandInteraction): Promise<v
     return;
   }
 
-  // Auto-mode: pick voice or text based on context.
-  // 1. If a voice line is active in this guild → resume into voice
-  // 2. Else if a text chat is active in this channel → resume into text
-  // 3. Else use the saved Session.mode
-  // 4. Else default to voice (legacy behavior — needs to be in a voice channel)
+  // Auto-mode ladder:
+  // 1. Active voice line in this guild → resume into voice (rejoin same call)
+  // 2. Active text chat in this channel → resume into text (replace it)
+  // 3. Saved Session.mode → use it
+  // 4. User is currently sitting in a voice channel → voice
+  // 5. Otherwise → text (safer default — at least it'll work without a VC)
   const guildId = interaction.guildId;
   const channelId = interaction.channelId;
   const activeVoice = guildId ? lines.has(guildId) : false;
   const activeText = textChats.has(channelId);
+  const memberInVoice =
+    interaction.member instanceof GuildMember && interaction.member.voice.channel != null;
 
   let mode: "voice" | "text";
   if (activeVoice) {
     mode = "voice";
   } else if (activeText) {
     mode = "text";
+  } else if (session.mode) {
+    mode = session.mode;
+  } else if (memberInVoice) {
+    mode = "voice";
   } else {
-    mode = session.mode ?? "voice";
+    mode = "text";
   }
 
-  console.log(`[resume] "${session.name}" → ${mode} (activeVoice=${activeVoice} activeText=${activeText} sessMode=${session.mode ?? "(unset)"})`);
+  console.log(
+    `[resume] "${session.name}" → ${mode} ` +
+    `(activeVoice=${activeVoice} activeText=${activeText} ` +
+    `sessMode=${session.mode ?? "(unset)"} memberInVoice=${memberInVoice})`,
+  );
 
   if (mode === "text") {
     await startTextSession(interaction, session, true);
