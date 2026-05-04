@@ -59,7 +59,7 @@ export class ClaudeCodeBackend implements AgentBackend {
       args.push("--system-prompt", this.opts.systemPrompt);
     }
     if (this.opts.model) args.push("--model", this.opts.model);
-    if (this.opts.effort) args.push("--reason-effort", this.opts.effort);
+    if (this.opts.effort) args.push("--effort", this.opts.effort);
 
     if (mcpUrl) {
       const mcpConfig = {

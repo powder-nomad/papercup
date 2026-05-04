@@ -27,11 +27,12 @@ export type Session = {
    */
   notify?: boolean;
   /**
-   * Reasoning-effort hint for the backend. Maps to `--reason-effort` on
+   * Reasoning-effort hint for the backend. Maps to `--effort` on the
    * Claude Code CLI and to `thinking.budget_tokens` for the direct API
-   * backend. minimal | low | medium | high | xhigh (Opus only).
+   * backend. minimal | low | medium | high | xhigh | max (Opus only for
+   * the top tiers; CLI accepts all).
    */
-  effort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /**
    * "voice" if the session was created via /pickup mode:voice (default),
    * "text" if mode:text. Stored only for display/resume hints — the actual

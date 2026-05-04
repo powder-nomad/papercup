@@ -65,7 +65,7 @@ export type SpeakerAgentOpts = {
   /** Per-session model override; falls back to AGENT_MODEL env. */
   model?: string;
   /** Reasoning-effort hint; backend-specific translation. */
-  effort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /**
    * Voice mode applies the phone-call system prompt (terse, plain prose,
    * Korean=1 sentence). Text mode passes no system prompt so the backend

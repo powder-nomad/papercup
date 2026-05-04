@@ -27,11 +27,12 @@ export class AnthropicApiBackend implements AgentBackend {
     this.history.push({ role: "user", content: userText });
 
     // Effort → thinking budget. minimal = thinking off, otherwise budget tokens.
-    const budgetByEffort: Record<"low" | "medium" | "high" | "xhigh", number> = {
+    const budgetByEffort: Record<"low" | "medium" | "high" | "xhigh" | "max", number> = {
       low: 1024,
       medium: 4096,
       high: 16384,
       xhigh: 32768,
+      max: 64000,
     };
     const thinking = this.opts.effort && this.opts.effort !== "minimal"
       ? { type: "enabled" as const, budget_tokens: budgetByEffort[this.opts.effort] }

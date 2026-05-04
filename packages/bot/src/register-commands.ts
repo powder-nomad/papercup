@@ -48,6 +48,7 @@ const commands = [
           { name: "medium", value: "medium" },
           { name: "high", value: "high" },
           { name: "xhigh (Opus only)", value: "xhigh" },
+          { name: "max (Opus only)", value: "max" },
         ),
     )
     .toJSON(),
@@ -122,6 +123,7 @@ const commands = [
           { name: "medium", value: "medium" },
           { name: "high", value: "high" },
           { name: "xhigh (Opus only)", value: "xhigh" },
+          { name: "max (Opus only)", value: "max" },
           { name: "default", value: "default" },
         ),
     )

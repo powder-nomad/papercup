@@ -39,12 +39,12 @@ export type AgentBackendOpts = {
   resume?: boolean;
   /**
    * Reasoning-effort hint. Each backend translates to its own knob:
-   * - claude-code  → `--reason-effort <level>` flag (xhigh = Opus only)
+   * - claude-code  → `--effort <level>` flag (xhigh, max = Opus only)
    * - anthropic-api → maps to thinking.budget_tokens (minimal=disabled,
-   *   low≈1024, medium≈4096, high≈16384, xhigh≈32768)
+   *   low≈1024, medium≈4096, high≈16384, xhigh≈32768, max≈64000)
    * - codex        → ignored (no native equivalent today)
    */
-  effort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 };
 
 export interface AgentBackend {

@@ -191,7 +191,7 @@ async function handlePickup(interaction: ChatInputCommandInteraction): Promise<v
   const mode = (interaction.options.getString("mode") ?? "voice") as "voice" | "text";
   const model = interaction.options.getString("model") ?? undefined;
   const effort = interaction.options.getString("effort") as
-    | "minimal" | "low" | "medium" | "high" | "xhigh" | null;
+    | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
 
   const session = await sessions.create({ name });
   if (model) await sessions.setModel(session.id, model);
@@ -589,7 +589,7 @@ async function handleEffort(interaction: ChatInputCommandInteraction): Promise<v
 
   const session = active.kind === "voice" ? active.state.session : active.chat.session;
   const level = interaction.options.getString("level", true) as
-    | "minimal" | "low" | "medium" | "high" | "xhigh" | "default";
+    | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "default";
   const value = level === "default" ? undefined : level;
   const updated = await sessions.setEffort(session.id, value);
   if (!updated) {
