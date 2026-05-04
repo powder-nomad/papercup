@@ -5,6 +5,7 @@ const enNav: DefaultTheme.NavItem[] = [
   { text: "Architecture", link: "/architecture/" },
   { text: "Components", link: "/components/voice-pipeline" },
   { text: "Config", link: "/config" },
+  { text: "Security", link: "/security" },
   { text: "Troubleshooting", link: "/troubleshooting" },
   { text: "GitHub", link: "https://github.com/powder-nomad/papercup" },
 ];
@@ -54,6 +55,7 @@ const koNav: DefaultTheme.NavItem[] = [
   { text: "아키텍처", link: "/ko/architecture/" },
   { text: "구성요소", link: "/ko/components/voice-pipeline" },
   { text: "설정", link: "/ko/config" },
+  { text: "보안", link: "/ko/security" },
   { text: "문제 해결", link: "/ko/troubleshooting" },
   { text: "GitHub", link: "https://github.com/powder-nomad/papercup" },
 ];

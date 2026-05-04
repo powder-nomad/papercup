@@ -10,6 +10,7 @@
 | `DISCORD_CLIENT_ID` | 예 | 애플리케이션 ID |
 | `DISCORD_GUILD_ID` | 예 | 슬래시 명령이 등록될 서버 ID |
 | `BOT_TEXT_CHANNEL_ID` | 아니요 | 글로벌 기본 바인딩 채널; 길드별 `/bind`가 우선 |
+| `BOT_ALLOWED_USERS` | 아니요 | 쉼표 구분 Discord 사용자 ID. 설정되면 해당 사용자만 봇 조작 가능. **다른 사용자에게 봇을 노출하는 모든 배포 전에 설정.** [보안](/ko/security#required-user-allowlist) 참조 |
 
 ## 음성 파이프라인
 
@@ -70,7 +71,13 @@
 
 ## 확장
 
-(현재 환경 변수 없음. 샌드박스 디렉터리는 `data/extensions/<id>/`. MCP 서버는 임시 로컬호스트 포트 사용.)
+샌드박스 디렉터리는 `data/extensions/<id>/`. MCP 서버는 임시 로컬호스트 포트 사용. 권한 정책은 환경 변수로 제어 — 전체 강화 가이드는 [보안](/ko/security#extension-sandbox).
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `EXTENSION_PERMISSION_MODE` | `bypassPermissions` | `default` / `acceptEdits` / `auto` / `bypassPermissions` / `plan`. 공개 배포 전에 강화 |
+| `EXTENSION_ALLOWED_TOOLS` | `default` | 확장이 사용 가능한 도구 화이트리스트 (예: `"Read Edit Write Bash(npm *)"`) |
+| `EXTENSION_DISALLOWED_TOOLS` | — | 명시적 거부 (예: `"WebFetch Bash(rm -rf *)"`) |
 
 ## 진단
 

@@ -45,6 +45,24 @@ const vadThreshold = Number(process.env.VAD_THRESHOLD ?? 0.4);
 const vadMinSpeechWindows = Number(process.env.VAD_MIN_SPEECH_WINDOWS ?? 3);
 const boundTextChannelId = process.env.BOT_TEXT_CHANNEL_ID?.trim() || undefined;
 
+// User allowlist — comma-separated Discord user IDs. When set, the bot only
+// responds to messages and slash commands from those IDs; everyone else gets
+// a polite refusal (slash) or silent ignore (text). Empty/unset → respond to
+// everyone (backward compat). Set this BEFORE going public.
+const allowedUserIds = new Set(
+  (process.env.BOT_ALLOWED_USERS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+if (allowedUserIds.size > 0) {
+  console.log(`[security] BOT_ALLOWED_USERS active — ${allowedUserIds.size} user(s) on the allowlist`);
+}
+
+function isAllowed(userId: string): boolean {
+  return allowedUserIds.size === 0 || allowedUserIds.has(userId);
+}
+
 const VAD_WINDOW_SAMPLES = 512; // 32 ms @ 16 kHz mono
 
 const vad = new SileroVad();
@@ -140,6 +158,17 @@ console.log(`[mcp] tools available at ${mcpInfo.url}`);
 
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
+
+  if (!isAllowed(interaction.user.id)) {
+    console.log(`[security] denied /${interaction.commandName} from ${interaction.user.tag} (${interaction.user.id})`);
+    try {
+      await interaction.reply({
+        content: "You're not on this Papercup's allowlist. Ask the operator to add your Discord user ID to BOT_ALLOWED_USERS.",
+        flags: MessageFlags.Ephemeral,
+      });
+    } catch { /* ignore */ }
+    return;
+  }
 
   try {
     if (interaction.commandName === "pickup") {
@@ -691,6 +720,12 @@ function humanAgo(ts: number): string {
 async function handleMessage(msg: Message): Promise<void> {
   if (msg.author.bot) return;
   if (!msg.guild) return; // text-channel handler is guild-only for now
+  if (!isAllowed(msg.author.id)) {
+    // Silent ignore for text — the bot stays out of channel chatter when
+    // someone outside the allowlist talks. Slash commands give a clear
+    // "denied" reply because the user explicitly invoked.
+    return;
+  }
 
   const me = client.user;
   if (!me) return;

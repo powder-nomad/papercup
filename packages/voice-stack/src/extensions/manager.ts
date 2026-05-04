@@ -88,12 +88,27 @@ export class ExtensionManager extends EventEmitter {
     this.extensions.set(id, ext);
     await this.persist();
 
-    const args = [
+    // Extension permission policy. Env-driven so deployments can lock down
+    // without code changes. Default stays bypassPermissions (extensions run
+    // unattended; default/acceptEdits would hang on dangerous tools), but
+    // users can flip to default/acceptEdits and combine with hand-picked
+    // ALLOWED/DISALLOWED tool lists for tighter control.
+    const permMode = process.env.EXTENSION_PERMISSION_MODE ?? "bypassPermissions";
+    const allowedTools = process.env.EXTENSION_ALLOWED_TOOLS?.trim() || "default";
+    const disallowedTools = process.env.EXTENSION_DISALLOWED_TOOLS?.trim();
+
+    const args: string[] = [
       "-p", opts.task,
       "--output-format", "json",
-      "--dangerously-skip-permissions", // autonomous; sandboxed to its own dir
-      "--allowedTools", "default",
+      "--permission-mode", permMode,
+      // Scope: extension's own sandbox dir. Useful when permMode != bypass —
+      // claude rejects writes outside the dir + cwd unless --add-dir is set.
+      "--add-dir", dir,
+      "--allowedTools", allowedTools,
     ];
+    if (disallowedTools) {
+      args.push("--disallowedTools", disallowedTools);
+    }
 
     console.log(`[ext ${id}] spawning in ${dir}: "${opts.task.slice(0, 60)}${opts.task.length > 60 ? "…" : ""}"`);
     const proc = spawn("claude", args, {

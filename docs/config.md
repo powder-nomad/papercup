@@ -15,6 +15,7 @@ Static-vs-session precedence: per-session settings override env defaults when th
 | `DISCORD_CLIENT_ID` | yes | Application ID |
 | `DISCORD_GUILD_ID` | yes | Server ID where slash commands register |
 | `BOT_TEXT_CHANNEL_ID` | no | Global fallback bound channel; per-guild `/bind` wins |
+| `BOT_ALLOWED_USERS` | no | Comma-separated Discord user IDs. When set, only those users can drive the bot. **Set this before any deployment that exposes the bot to other users.** See [Security](/security#required-user-allowlist) |
 
 ## Voice pipeline
 
@@ -104,7 +105,13 @@ These attach to the session record in `data/sessions.json` and survive `/hangup`
 
 ## Extensions
 
-(No env knobs today. Sandbox dirs at `data/extensions/<id>/`. MCP server picks an ephemeral localhost port.)
+Sandbox dirs at `data/extensions/<id>/`. MCP server picks an ephemeral localhost port. Permission policy is env-driven — see [Security](/security#extension-sandbox) for the full hardening guide.
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `EXTENSION_PERMISSION_MODE` | `bypassPermissions` | `default` / `acceptEdits` / `auto` / `bypassPermissions` / `plan`. Tighten before public deployment |
+| `EXTENSION_ALLOWED_TOOLS` | `default` | Whitelist for tools the extension can use (e.g. `"Read Edit Write Bash(npm *)"`) |
+| `EXTENSION_DISALLOWED_TOOLS` | — | Explicit denies (e.g. `"WebFetch Bash(rm -rf *)"`) |
 
 ## Diagnostic
 
