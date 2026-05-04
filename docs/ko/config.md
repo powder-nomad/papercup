@@ -43,15 +43,30 @@
 
 ## 스피커 에이전트
 
+### 환경 수준 (오버라이드되지 않으면 모든 세션에 적용)
+
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `AGENT_BACKEND` | `claude-code` | `claude-code` / `codex` / `anthropic-api` |
-| `AGENT_MODEL` | `haiku` | 백엔드의 `--model`에 전달 |
+| `AGENT_MODEL` | `haiku` | 기본 모델. 세션별 오버라이드는 `/model name:<id>` 또는 `/pickup model:<id>` |
 | `AGENT_MAX_TOKENS` | `200` | `anthropic-api`에서만 사용 |
 | `ANTHROPIC_API_KEY` | — | `AGENT_BACKEND=anthropic-api`일 때 필요 |
 | `CODEX_SANDBOX` | `read-only` | `read-only` / `workspace-write` / `danger-full-access` |
 | `SPEAKER_TOOLS` | `Read Glob Grep` | 스피커가 인라인으로 사용 가능한 CC 도구 |
 | `PROJECT_DIRS` | — | 스피커가 읽을 수 있는 절대 경로 (쉼표 구분) |
+
+### 세션별 (슬래시 명령으로 설정)
+
+`data/sessions.json`의 세션 레코드에 저장되며 `/hangup` → `/resume` 후에도 유지됩니다.
+
+| 필드 | 설정 방법 | 설명 |
+| --- | --- | --- |
+| `model` | `/pickup model:<id>` 또는 `/model name:<id>` | 세션별 모델 오버라이드 (예: `claude-opus-4-7`). 핫스왑이 히스토리 보존 |
+| `effort` | `/pickup effort:<level>` 또는 `/effort level:<level>` | `minimal` / `low` / `medium` / `high` / `xhigh` (Opus 전용) / `max` (Opus 전용). CLI에서는 `--effort`; Anthropic API에서는 `thinking.budget_tokens` |
+| `mode` | `/pickup mode:voice|text` | 음성 모드는 전화 통화 페르소나 프롬프트 적용; 텍스트 모드는 시스템 프롬프트 없음 (기본 Claude Code 동작) |
+| `permissionMode` | `/pickup permission-mode:<mode>` 또는 `/permissions mode:<mode>` | 도구 권한 정책. 모드별 기본값: text → `bypassPermissions` (vibecoding), voice → `default`. 선택지: `default` / `acceptEdits` / `auto` / `bypassPermissions` / `plan` |
+| `notify` | `/notify state:on|off` | 켜져 있을 때, 확장 정착이 활성 컨테이너에 TTS 공지(음성) 또는 Discord 메시지(텍스트)를 발생 |
+| `backendId` | (자동) | 재개를 위한 백엔드 네이티브 세션 ID (Claude Code UUID, Codex thread id) |
 
 ## 확장
 

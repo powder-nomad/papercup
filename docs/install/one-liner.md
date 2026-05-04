@@ -42,6 +42,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/powder-nomad/papercup/main/i
 --yes / -y                Accept all defaults; never prompt
 ```
 
+::: tip Runtime knobs are separate
+The `--model` install flag sets the **default** model for new sessions. Each session can override it at runtime via `/pickup model:<id>` or `/model name:<id>` — same for reasoning effort (`/effort`), tool permissions (`/permissions`), and extension-completion alerts (`/notify`). See [Slash commands](/components/slash-commands) for the full runtime surface.
+:::
+
 ## What it does
 
 The script is idempotent. Re-run it any time with different flags to reconfigure.

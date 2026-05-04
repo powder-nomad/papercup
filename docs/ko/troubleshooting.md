@@ -38,6 +38,22 @@ bash packages/bot/bin/papercup tail 50
 
 설계상 그렇습니다 — 스피커는 읽기 전용 도구만 가지며 작업은 확장에 위임합니다. 인라인 읽기를 허용하려면 `.env`에 `PROJECT_DIRS=/path/to/your/project`를 설정하고 재시작하세요. 그러면 스피커가 해당 경로에서 Read/Glob/Grep을 사용합니다.
 
+### 텍스트 모드에서 에이전트가 영원히 멈춤
+
+증상: `/pickup mode:text`로 도구(Bash, Edit 등)를 사용하는 메시지를 보내도 응답이 오지 않음. 로그상 `claude -p` 프로세스는 살아있지만 조용함.
+
+원인: claude가 인터랙티브 권한 프롬프트를 기다리지만 보낼 곳이 없음 (파이프된 stdio).
+
+해결: 세션별 권한 정책. 텍스트 모드는 이제 `bypassPermissions`가 기본값이지만, 정착 전에 만들어진 세션이거나 더 엄격한 모드를 설정한 경우 멈춤이 발생. 라이브로 전환:
+
+```
+/permissions mode:bypassPermissions
+```
+
+공개 전 더 엄격한 제어를 원한다면 Discord 버튼 UI가 정답 (계획됨, 미배포). 그때까지는 도구를 사용하는 텍스트 모드에서 `bypassPermissions`만 동작.
+
+`/pickup mode:voice`는 `default` 권한을 사용하며 프롬프트에 거의 부딪히지 않습니다 — 스피커는 주로 샌드박스 확장에 위임하고, 확장은 자체 샌드박스 디렉터리에서 `--dangerously-skip-permissions`로 실행됩니다.
+
 ### 응답 지연이 너무 길음
 
 턴별 로그 분석:

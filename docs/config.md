@@ -1,6 +1,11 @@
 # Configuration reference
 
-All config lives in `packages/bot/.env`. Copy `.env.example` and edit.
+Two surfaces:
+
+1. **Static config** lives in `packages/bot/.env` — Discord credentials, voice pipeline tunables, TTS engine knobs, default agent backend / model. Copy `.env.example` and edit.
+2. **Per-session config** lives in `data/sessions.json`, mutated at runtime by slash commands (`/pickup`, `/model`, `/effort`, `/permissions`, `/notify`). Each session can have its own model, reasoning effort, permission policy, and notification opt-in. See [Slash commands](/components/slash-commands) for the full surface.
+
+Static-vs-session precedence: per-session settings override env defaults when the agent starts. Clearing a per-session override (`/model name:` blank, `/effort level:default`, `/permissions mode:default-for-mode`) falls back to the env value.
 
 ## Discord
 
@@ -72,15 +77,30 @@ The TTS layer auto-routes by detected language. Default `auto` runs Kokoro for E
 
 ## Speaker agent
 
+### Env-level (apply to every session unless overridden)
+
 | Var | Default | Notes |
 | --- | --- | --- |
 | `AGENT_BACKEND` | `claude-code` | `claude-code` / `codex` / `anthropic-api` |
-| `AGENT_MODEL` | `haiku` | Passed to the backend's `--model` |
+| `AGENT_MODEL` | `haiku` | Default model. Per-session override via `/model name:<id>` or `/pickup model:<id>` |
 | `AGENT_MAX_TOKENS` | `200` | For `anthropic-api` only |
 | `ANTHROPIC_API_KEY` | — | Required if `AGENT_BACKEND=anthropic-api` |
 | `CODEX_SANDBOX` | `read-only` | `read-only` / `workspace-write` / `danger-full-access` |
 | `SPEAKER_TOOLS` | `Read Glob Grep` | Built-in CC tools the speaker can use inline |
 | `PROJECT_DIRS` | — | Comma-separated absolute paths the speaker can read |
+
+### Per-session (set via slash commands)
+
+These attach to the session record in `data/sessions.json` and survive `/hangup` → `/resume`.
+
+| Field | Set via | Notes |
+| --- | --- | --- |
+| `model` | `/pickup model:<id>` or `/model name:<id>` | Per-session model override (e.g. `claude-opus-4-7`). Hot-swap preserves history |
+| `effort` | `/pickup effort:<level>` or `/effort level:<level>` | `minimal` / `low` / `medium` / `high` / `xhigh` (Opus only) / `max` (Opus only). Maps to `--effort` on the CLI; `thinking.budget_tokens` on Anthropic API |
+| `mode` | `/pickup mode:voice|text` | Voice mode applies the phone-call persona prompt; text mode passes no system prompt (default Claude Code behavior — markdown OK, multi-paragraph OK) |
+| `permissionMode` | `/pickup permission-mode:<mode>` or `/permissions mode:<mode>` | Tool permission policy. Mode-aware default: text → `bypassPermissions` (vibecoding), voice → `default`. Choices: `default` / `acceptEdits` / `auto` / `bypassPermissions` / `plan` |
+| `notify` | `/notify state:on|off` | When on, an extension settling fires a TTS announcement (voice) or Discord message (text) into the active container |
+| `backendId` | (auto) | Backend's native session id (Claude Code UUID, Codex thread id) for resume |
 
 ## Extensions
 

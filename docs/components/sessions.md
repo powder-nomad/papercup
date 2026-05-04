@@ -6,12 +6,14 @@ Named conversations that survive `/hangup`. Pick up later with `/resume name:<na
 
 | Command | Effect |
 | --- | --- |
-| `/pickup` | New auto-named session (e.g. `call-2026-05-02-1832`), bot joins voice |
-| `/pickup name:planning` | New session with the given name |
-| `/hangup` | Bot leaves voice; **session is preserved**, can resume later |
-| `/resume name:planning` | Resume the named session, bot rejoins voice |
+| `/pickup` | New auto-named session (`call-2026-05-04-1234`), voice mode by default |
+| `/pickup name:planning mode:text model:claude-opus-4-7 effort:high` | Named session with the full vibecoding setup, no voice join |
+| `/hangup` | Closes the active container (voice line OR text chat); session preserved |
+| `/resume name:planning` | Auto-mode — voice if you're in a voice channel, text if not |
 | `/sessions` | List recent sessions (15 max), most recently active first |
 | `/rename name:new-name` | Rename the active session |
+
+See [Slash commands](/components/slash-commands) for the full surface (`/model`, `/effort`, `/permissions`, `/notify`).
 
 ## Storage
 
@@ -26,19 +28,50 @@ Named conversations that survive `/hangup`. Pick up later with `/resume name:<na
       "createdAt": 1777694137387,
       "lastActiveAt": 1777695201000,
       "backendId": "9d8a...",
-      "backend": "claude-code"
+      "backend": "claude-code",
+      "mode": "text",
+      "model": "claude-opus-4-7",
+      "effort": "high",
+      "permissionMode": "bypassPermissions",
+      "notify": true
     }
   ]
 }
 ```
 
-- `id` is the bot's stable internal handle
-- `backendId` is what the agent backend uses to resume — usually equal to `id` for `claude-code` (which accepts pre-allocated UUIDs), but different for `codex` which assigns its own thread UUID on first turn
-- `backend` records which backend created the session, so we can refuse cross-backend resume
+| Field | Notes |
+| --- | --- |
+| `id` | Bot's stable internal handle (UUID) |
+| `name` | Slugified human name |
+| `backendId` | What the agent backend uses to resume. Usually `id` for `claude-code`; codex assigns its own thread UUID on first turn |
+| `backend` | Records which backend created the session — used to refuse cross-backend resume |
+| `mode` | `voice` or `text`. Drives system prompt + container choice on `/resume` auto-mode |
+| `model` | Optional per-session model override (e.g. `claude-opus-4-7`). Falls back to `AGENT_MODEL` env |
+| `effort` | Optional reasoning-effort hint. `minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
+| `permissionMode` | Optional tool-permission policy. `default` / `acceptEdits` / `auto` / `bypassPermissions` / `plan`. Mode-aware default applies when unset |
+| `notify` | If true, extension settle events fire a TTS announcement (voice) or text message (text) |
 
-## Per-line state
+All optional fields are omitted from the JSON when unset — sessions migrate forward cleanly from earlier schema versions.
 
-When a `/pickup` is active in a guild, a `LineState` record holds the open voice connection, the player, the speaker agent, and a reference to the Discord interaction so the status panel can keep updating. Hanging up tears down the connection but preserves the session record.
+## Active containers
+
+Two parallel runtime maps:
+
+- `lines: Map<guildId, LineState>` — voice lines. One per guild. Holds the voice connection, audio player, speaker agent, last interaction.
+- `textChats: Map<channelId, TextChat>` — text chats. One per channel. Holds the speaker agent and the session record.
+
+`/pickup mode:voice` registers a `LineState`; `/pickup mode:text` registers a `TextChat`. `/hangup` removes whichever is active for this guild/channel. The session itself stays in `data/sessions.json` regardless.
+
+## Hot-swap on `/model`, `/effort`, `/permissions`
+
+These commands don't restart the bot or recreate the session. They:
+
+1. Persist the new value on `Session` (e.g. `Session.model = "claude-opus-4-7"`)
+2. Stop the current `SpeakerAgent` instance for the active container
+3. Construct a new `SpeakerAgent` with the updated opts
+4. Call `agent.start({ resume: true, ... })` so the backend continues from where it was
+
+For backends with native sessions (claude-code, codex), backend resume preserves the full conversation history. For `anthropic-api`, history is in-memory; hot-swap loses prior turns. (Future fix: persist `anthropic-api` history alongside the session record.)
 
 ## Conversation history
 

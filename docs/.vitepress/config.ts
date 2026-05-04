@@ -39,6 +39,7 @@ const enSidebar: DefaultTheme.SidebarMulti = {
       items: [
         { text: "Voice pipeline (VAD/STT/TTS)", link: "/components/voice-pipeline" },
         { text: "Speaker agent + backends", link: "/components/speaker-agent" },
+        { text: "Slash commands", link: "/components/slash-commands" },
         { text: "Extension subagents", link: "/components/extensions" },
         { text: "Sessions", link: "/components/sessions" },
         { text: "Channel binding", link: "/components/channel-binding" },
@@ -87,6 +88,7 @@ const koSidebar: DefaultTheme.SidebarMulti = {
       items: [
         { text: "음성 파이프라인 (VAD/STT/TTS)", link: "/ko/components/voice-pipeline" },
         { text: "스피커 에이전트 + 백엔드", link: "/ko/components/speaker-agent" },
+        { text: "슬래시 명령", link: "/ko/components/slash-commands" },
         { text: "확장 서브에이전트", link: "/ko/components/extensions" },
         { text: "세션", link: "/ko/components/sessions" },
         { text: "채널 바인딩", link: "/ko/components/channel-binding" },

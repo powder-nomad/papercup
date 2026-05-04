@@ -38,6 +38,22 @@ If `f32 peak` is healthy (>0.1) but VAD probs are all <0.05, suspect the Silero 
 
 By design — speaker has read-only tools and is told to delegate action work to extensions. To allow inline reads, set `PROJECT_DIRS=/path/to/your/project` in `.env` and restart. The speaker will then use Read/Glob/Grep on those paths.
 
+### Agent hangs forever in text mode
+
+Symptom: `/pickup mode:text`, send a message that needs a tool (Bash, Edit, etc.), no reply ever comes. Logs show the spawned `claude -p` process is alive but quiet.
+
+Cause: claude is waiting on an interactive permission prompt that has nowhere to go (we run with piped stdio).
+
+Fix: per-session permission policy. Text mode now defaults to `bypassPermissions`; if you see the hang, your session predates the fix or you set a stricter mode. Flip live with:
+
+```
+/permissions mode:bypassPermissions
+```
+
+If you want stricter control before going public, the right answer is the Discord-button UI (planned, not shipped). Until then, `bypassPermissions` is the only working choice for text mode that uses tools.
+
+`/pickup mode:voice` uses `default` permissions and rarely hits prompts because the speaker mostly delegates to sandboxed extensions, which already run with `--dangerously-skip-permissions` in their own sandbox dirs.
+
 ### Latency is too high
 
 Per-turn breakdown in logs:

@@ -159,11 +159,14 @@ brew install mecab mecab-ipadic openssl pkg-config
 | Component | Today | Notes |
 | --- | --- | --- |
 | VAD | Silero | Only option |
-| STT | Whisper | `base` (multilingual, default) auto-detects 99 languages; `base.en` / `small` / `small.en` available |
-| TTS | Kokoro + MeloTTS (`auto`) | Kokoro: en/ja/zh/es/fr/hi/it/pt. MeloTTS: ko (auto-routes Korean → MeloTTS, others → Kokoro) |
+| STT | Whisper | `small` (multilingual, default) auto-detects 99 languages; `base` / `base.en` / `small.en` available |
+| TTS | Kokoro + MeloTTS + XTTS-v2 (`auto`) | Kokoro: en/ja/zh/es/fr/hi/it/pt. Korean → MeloTTS (light, monotone) or XTTS-v2 (~58 voices, voice cloning). Set via `TTS_KO_ENGINE` |
 | Agent | Claude Code / Codex / Anthropic API | Switch via `AGENT_BACKEND`; CLIs use existing login |
+| Per-session config | model · effort · permissions · notify · mode | Set via `/pickup` flags or hot-swap mid-session via `/model` `/effort` `/permissions` `/notify` |
+| Modes | Voice (phone-call prompt) + Text (vibecoding) | `/pickup mode:voice` or `mode:text`. Text mode drops the system prompt → normal Claude Code behavior |
+| Reasoning effort | minimal · low · medium · high · xhigh · max | xhigh / max are Opus-only |
 | Transport | Discord voice + text | Bind a single channel via `/bind`, or @-mention anywhere |
 
-See **[Components](/components/voice-pipeline)** for the deep dive.
+See **[Slash commands](/components/slash-commands)** for the runtime surface and **[Components](/components/voice-pipeline)** for the deep dive.
 
 </div>

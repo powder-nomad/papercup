@@ -37,6 +37,29 @@ Extensions are background Claude Code instances that run autonomously while you 
 
 The server binds to `127.0.0.1` only — never exposed to the network. Sessions are per-request via the standard MCP session id header.
 
+## Settled events + `/notify`
+
+`ExtensionManager` extends `EventEmitter` and fires `"settled"` whenever an extension exits the running state (completed / failed / interrupted). The bot subscribes globally on boot:
+
+```ts
+extensions.on("settled", (ext) => {
+  // Voice lines: speak a one-line completion notice if /notify is on.
+  for (const [, state] of lines) {
+    if (state.session.notify) void announceExtensionSettledVoice(state, ext);
+  }
+  // Text chats: drop a Discord message in the channel.
+  for (const [channelId, chat] of textChats) {
+    if (chat.session.notify) void announceExtensionSettledText(channelId, chat, ext);
+  }
+});
+```
+
+When `/notify state:on` is set on a session, settle events surface as:
+- **Voice line** → TTS announcement: "Heads up — auth-deploy just finished after 4 minutes. Want the rundown?"
+- **Text chat** → Discord message with the first 400 chars of the extension's `summary`
+
+Off by default. See [Slash commands](/components/slash-commands#notify) for the exact toggle.
+
 ## Persistence
 
 `data/extensions.json`:
