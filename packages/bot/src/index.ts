@@ -232,6 +232,7 @@ async function startTextSession(
     resume,
     model: session.model,
     effort: session.effort,
+    mode: "text",
   });
   textChats.set(interaction.channelId, { session, agent });
   await sessions.touch(session.id);
@@ -362,6 +363,7 @@ async function joinAndStart(
     resume,
     model: session.model,
     effort: session.effort,
+    mode: "voice",
   });
   await sessions.touch(session.id);
 
@@ -532,6 +534,7 @@ async function hotSwapAgent(active: ActiveContainer, session: Session): Promise<
       resume: true,
       model: session.model,
       effort: session.effort,
+      mode: "voice",
     });
     await syncBackendId(active.state);
   } else {
@@ -543,6 +546,7 @@ async function hotSwapAgent(active: ActiveContainer, session: Session): Promise<
       resume: true,
       model: session.model,
       effort: session.effort,
+      mode: "text",
     });
   }
 }
@@ -737,6 +741,7 @@ async function handleTextOnlyChat(msg: Message, userText: string): Promise<void>
       resume: false,
       model: session.model,
       effort: session.effort,
+      mode: "text",
     });
     chat = { session, agent };
     textChats.set(msg.channelId, chat);

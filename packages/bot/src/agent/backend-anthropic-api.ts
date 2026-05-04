@@ -45,7 +45,9 @@ export class AnthropicApiBackend implements AgentBackend {
     const resp = await this.client.messages.create({
       model: this.opts.model ?? "claude-haiku-4-5-20251001",
       max_tokens: maxTokens,
-      system: this.opts.systemPrompt,
+      // Voice mode supplies a system prompt; text mode omits it so the model
+      // behaves as a default Claude assistant.
+      ...(this.opts.systemPrompt ? { system: this.opts.systemPrompt } : {}),
       messages: this.history.map((t) => ({ role: t.role, content: t.content })),
       ...(thinking ? { thinking } : {}),
     });

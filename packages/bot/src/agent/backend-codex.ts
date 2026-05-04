@@ -48,7 +48,10 @@ export class CodexBackend implements AgentBackend {
     if (this.firstTurn || !this.threadId) {
       // First turn: prefix system prompt to user text since codex has no --system flag.
       // Sandbox + add-dir only apply to the first turn (they're locked in for the thread).
-      prompt = `<system>\n${this.opts.systemPrompt}\n</system>\n\n${userText}`;
+      // Text mode passes no systemPrompt → just send the raw user text.
+      prompt = this.opts.systemPrompt
+        ? `<system>\n${this.opts.systemPrompt}\n</system>\n\n${userText}`
+        : userText;
       args = [
         "exec",
         "--skip-git-repo-check",

@@ -50,9 +50,14 @@ export class ClaudeCodeBackend implements AgentBackend {
     const args: string[] = [
       "-p", userText,
       "--allowedTools", allowedTools,
-      "--system-prompt", this.opts.systemPrompt,
       "--output-format", "json",
     ];
+    // Only override the CLI's default system prompt in voice mode (where it's
+    // set). Text mode passes no system prompt so claude -p behaves as a
+    // normal Claude Code session.
+    if (this.opts.systemPrompt) {
+      args.push("--system-prompt", this.opts.systemPrompt);
+    }
     if (this.opts.model) args.push("--model", this.opts.model);
     if (this.opts.effort) args.push("--reason-effort", this.opts.effort);
 

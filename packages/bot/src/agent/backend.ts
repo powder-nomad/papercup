@@ -20,7 +20,13 @@ export type AgentReply = {
 };
 
 export type AgentBackendOpts = {
-  systemPrompt: string;
+  /**
+   * Optional. When undefined, the backend should use its default behavior
+   * (no `--system-prompt`, no `system:` field, etc.). Voice mode passes the
+   * phone-call persona; text mode passes nothing so Claude Code behaves
+   * normally.
+   */
+  systemPrompt?: string;
   model?: string;
   maxTokens?: number;
   /**

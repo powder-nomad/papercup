@@ -66,6 +66,13 @@ export type SpeakerAgentOpts = {
   model?: string;
   /** Reasoning-effort hint; backend-specific translation. */
   effort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  /**
+   * Voice mode applies the phone-call system prompt (terse, plain prose,
+   * Korean=1 sentence). Text mode passes no system prompt so the backend
+   * (Claude Code, Codex, …) behaves normally — markdown, multi-paragraph
+   * answers, etc. Defaults to "voice" for backward compat.
+   */
+  mode?: "voice" | "text";
 };
 
 export class SpeakerAgent {
@@ -78,8 +85,11 @@ export class SpeakerAgent {
 
   async start(opts: SpeakerAgentOpts = {}): Promise<void> {
     if (this.started) return;
+    const mode = opts.mode ?? "voice";
     await this.backend.start({
-      systemPrompt: SYSTEM_PROMPT,
+      // Only voice mode gets the phone-call persona. Text mode = pure
+      // backend-default behavior (Claude Code being Claude Code).
+      systemPrompt: mode === "voice" ? SYSTEM_PROMPT : undefined,
       model: opts.model ?? process.env.AGENT_MODEL,
       maxTokens: process.env.AGENT_MAX_TOKENS ? Number(process.env.AGENT_MAX_TOKENS) : undefined,
       sessionId: opts.sessionId,
