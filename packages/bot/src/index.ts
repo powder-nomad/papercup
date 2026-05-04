@@ -471,7 +471,14 @@ async function handleNew(interaction: ChatInputCommandInteraction): Promise<void
   const voice = lines.get(guildId);
   const chat = textChats.get(channelId);
   if (!voice && !chat) {
-    await interaction.editReply("No active session. /pickup first, then /new.");
+    console.log(
+      `[new] no active container — guildId=${guildId} channelId=${channelId} ` +
+      `lines.keys=[${[...lines.keys()].join(",")}] textChats.keys=[${[...textChats.keys()].join(",")}]`,
+    );
+    await interaction.editReply(
+      "No active session. /pickup first, then /new.\n\n" +
+      "Note: text chats are in-memory only — a bot restart drops them. /resume name:<x> to reattach a saved session.",
+    );
     return;
   }
 
@@ -548,20 +555,18 @@ async function handleSessions(interaction: ChatInputCommandInteraction): Promise
 
 async function handleRename(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const guildId = interaction.guildId;
-  if (!guildId) {
-    await interaction.editReply("Not in a guild.");
+
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session. /pickup first, then /rename.");
     return;
   }
-  const state = lines.get(guildId);
-  if (!state) {
-    await interaction.editReply("No active line. /pickup first.");
-    return;
-  }
+
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
   const newName = interaction.options.getString("name", true);
   try {
-    const renamed = await sessions.rename(state.session.id, newName);
-    state.session = renamed;
+    const renamed = await sessions.rename(session.id, newName);
+    Object.assign(session, renamed);
     await interaction.editReply(`Renamed → **${renamed.name}**`);
   } catch (err) {
     await interaction.editReply(`❌ ${(err as Error).message}`);
