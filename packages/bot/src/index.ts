@@ -189,7 +189,7 @@ async function handlePickup(interaction: ChatInputCommandInteraction): Promise<v
   const mode = (interaction.options.getString("mode") ?? "voice") as "voice" | "text";
   const model = interaction.options.getString("model") ?? undefined;
   const effort = interaction.options.getString("effort") as
-    | "minimal" | "low" | "medium" | "high" | null;
+    | "minimal" | "low" | "medium" | "high" | "xhigh" | null;
 
   const session = await sessions.create({ name });
   if (model) await sessions.setModel(session.id, model);
@@ -488,7 +488,7 @@ async function handleModel(interaction: ChatInputCommandInteraction): Promise<vo
   const session = active.kind === "voice" ? active.state.session : active.chat.session;
   const modelInput = interaction.options.getString("name");
   const effortInput = interaction.options.getString("effort") as
-    | "minimal" | "low" | "medium" | "high" | "default" | null;
+    | "minimal" | "low" | "medium" | "high" | "xhigh" | "default" | null;
 
   // At least one option must be provided.
   if (modelInput === null && effortInput === null) {

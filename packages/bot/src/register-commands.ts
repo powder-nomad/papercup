@@ -47,6 +47,7 @@ const commands = [
           { name: "low", value: "low" },
           { name: "medium", value: "medium" },
           { name: "high", value: "high" },
+          { name: "xhigh (Opus only)", value: "xhigh" },
         ),
     )
     .toJSON(),

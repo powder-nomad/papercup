@@ -65,7 +65,7 @@ export type SpeakerAgentOpts = {
   /** Per-session model override; falls back to AGENT_MODEL env. */
   model?: string;
   /** Reasoning-effort hint; backend-specific translation. */
-  effort?: "minimal" | "low" | "medium" | "high";
+  effort?: "minimal" | "low" | "medium" | "high" | "xhigh";
 };
 
 export class SpeakerAgent {
