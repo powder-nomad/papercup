@@ -51,6 +51,19 @@ const commands = [
           { name: "max (Opus only)", value: "max" },
         ),
     )
+    .addStringOption((o) =>
+      o
+        .setName("permission-mode")
+        .setDescription("Tool permission policy. Default: text=bypassPermissions, voice=default.")
+        .setRequired(false)
+        .addChoices(
+          { name: "default (prompt; will hang in piped stdio!)", value: "default" },
+          { name: "acceptEdits (auto-allow edits)", value: "acceptEdits" },
+          { name: "auto (auto-mode classifier)", value: "auto" },
+          { name: "bypassPermissions (skip all checks; vibecoding)", value: "bypassPermissions" },
+          { name: "plan (read-only planning)", value: "plan" },
+        ),
+    )
     .toJSON(),
   new SlashCommandBuilder()
     .setName("hangup")
@@ -125,6 +138,24 @@ const commands = [
           { name: "xhigh (Opus only)", value: "xhigh" },
           { name: "max (Opus only)", value: "max" },
           { name: "default", value: "default" },
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("permissions")
+    .setDescription("Set the tool permission policy for the active session")
+    .addStringOption((o) =>
+      o
+        .setName("mode")
+        .setDescription("Permission mode. 'default-for-mode' clears the override.")
+        .setRequired(true)
+        .addChoices(
+          { name: "default", value: "default" },
+          { name: "acceptEdits", value: "acceptEdits" },
+          { name: "auto", value: "auto" },
+          { name: "bypassPermissions", value: "bypassPermissions" },
+          { name: "plan (read-only)", value: "plan" },
+          { name: "default-for-mode (clear override)", value: "default-for-mode" },
         ),
     )
     .toJSON(),

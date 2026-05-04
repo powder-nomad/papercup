@@ -40,6 +40,12 @@ export type Session = {
    * active when a message arrives.
    */
   mode?: "voice" | "text";
+  /**
+   * Tool permission policy for the underlying agent. Maps to claude's
+   * `--permission-mode` flag. Default behavior is mode-specific —
+   * see resolvePermissionMode() in index.ts.
+   */
+  permissionMode?: "default" | "acceptEdits" | "auto" | "bypassPermissions" | "plan";
 };
 
 export type SessionEffort = NonNullable<Session["effort"]>;
@@ -163,6 +169,22 @@ export class SessionStore {
     const s = this.sessions.find((s) => s.id === id);
     if (!s) return undefined;
     s.mode = mode;
+    s.lastActiveAt = Date.now();
+    await this.save();
+    return s;
+  }
+
+  async setPermissionMode(
+    id: string,
+    pm: NonNullable<Session["permissionMode"]> | undefined,
+  ): Promise<Session | undefined> {
+    const s = this.sessions.find((s) => s.id === id);
+    if (!s) return undefined;
+    if (pm === undefined) {
+      delete s.permissionMode;
+    } else {
+      s.permissionMode = pm;
+    }
     s.lastActiveAt = Date.now();
     await this.save();
     return s;

@@ -60,6 +60,7 @@ export class ClaudeCodeBackend implements AgentBackend {
     }
     if (this.opts.model) args.push("--model", this.opts.model);
     if (this.opts.effort) args.push("--effort", this.opts.effort);
+    if (this.opts.permissionMode) args.push("--permission-mode", this.opts.permissionMode);
 
     if (mcpUrl) {
       const mcpConfig = {

@@ -162,6 +162,8 @@ client.on("interactionCreate", async (interaction) => {
       await handleModel(interaction);
     } else if (interaction.commandName === "effort") {
       await handleEffort(interaction);
+    } else if (interaction.commandName === "permissions") {
+      await handlePermissions(interaction);
     } else if (interaction.commandName === "notify") {
       await handleNotify(interaction);
     }
@@ -192,10 +194,13 @@ async function handlePickup(interaction: ChatInputCommandInteraction): Promise<v
   const model = interaction.options.getString("model") ?? undefined;
   const effort = interaction.options.getString("effort") as
     | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
+  const permissionMode = interaction.options.getString("permission-mode") as
+    | "default" | "acceptEdits" | "auto" | "bypassPermissions" | "plan" | null;
 
   const session = await sessions.create({ name });
   if (model) await sessions.setModel(session.id, model);
   if (effort) await sessions.setEffort(session.id, effort);
+  if (permissionMode) await sessions.setPermissionMode(session.id, permissionMode);
   await sessions.setMode(session.id, mode);
   // Refresh from store so we pass the persisted values into the agent.
   const fresh = sessions.findByName(session.name) ?? session;
@@ -232,6 +237,7 @@ async function startTextSession(
     resume,
     model: session.model,
     effort: session.effort,
+    permissionMode: session.permissionMode,
     mode: "text",
   });
   textChats.set(interaction.channelId, { session, agent });
@@ -363,6 +369,7 @@ async function joinAndStart(
     resume,
     model: session.model,
     effort: session.effort,
+    permissionMode: session.permissionMode,
     mode: "voice",
   });
   await sessions.touch(session.id);
@@ -534,6 +541,7 @@ async function hotSwapAgent(active: ActiveContainer, session: Session): Promise<
       resume: true,
       model: session.model,
       effort: session.effort,
+      permissionMode: session.permissionMode,
       mode: "voice",
     });
     await syncBackendId(active.state);
@@ -546,6 +554,7 @@ async function hotSwapAgent(active: ActiveContainer, session: Session): Promise<
       resume: true,
       model: session.model,
       effort: session.effort,
+      permissionMode: session.permissionMode,
       mode: "text",
     });
   }
@@ -604,6 +613,37 @@ async function handleEffort(interaction: ChatInputCommandInteraction): Promise<v
     await interaction.editReply(`🧠 "${session.name}" effort → \`${session.effort}\`. History preserved.`);
   } else {
     await interaction.editReply(`🧠 "${session.name}" effort cleared (backend default).`);
+  }
+}
+
+async function handlePermissions(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session. /pickup first, then /permissions.");
+    return;
+  }
+
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
+  const choice = interaction.options.getString("mode", true);
+  const value = choice === "default-for-mode"
+    ? undefined
+    : (choice as "default" | "acceptEdits" | "auto" | "bypassPermissions" | "plan");
+  const updated = await sessions.setPermissionMode(session.id, value);
+  if (!updated) {
+    await interaction.editReply("Couldn't update session — record missing.");
+    return;
+  }
+  Object.assign(session, updated);
+
+  await hotSwapAgent(active, session);
+
+  if (session.permissionMode) {
+    await interaction.editReply(`🔐 "${session.name}" permission mode → \`${session.permissionMode}\`.`);
+  } else {
+    const fallback = active.kind === "text" ? "bypassPermissions" : "default";
+    await interaction.editReply(`🔐 "${session.name}" permission override cleared. Using mode default: \`${fallback}\`.`);
   }
 }
 
@@ -741,6 +781,7 @@ async function handleTextOnlyChat(msg: Message, userText: string): Promise<void>
       resume: false,
       model: session.model,
       effort: session.effort,
+      permissionMode: session.permissionMode,
       mode: "text",
     });
     chat = { session, agent };

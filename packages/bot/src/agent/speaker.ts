@@ -73,6 +73,8 @@ export type SpeakerAgentOpts = {
    * answers, etc. Defaults to "voice" for backward compat.
    */
   mode?: "voice" | "text";
+  /** Tool permission policy; falls back to mode-aware default. */
+  permissionMode?: "default" | "acceptEdits" | "auto" | "bypassPermissions" | "plan";
 };
 
 export class SpeakerAgent {
@@ -86,6 +88,11 @@ export class SpeakerAgent {
   async start(opts: SpeakerAgentOpts = {}): Promise<void> {
     if (this.started) return;
     const mode = opts.mode ?? "voice";
+    // Default permission policy:
+    //   text → bypassPermissions (vibecoding; piped stdio can't service prompts)
+    //   voice → default (speaker mostly delegates to extensions; rare bash)
+    const permissionMode = opts.permissionMode
+      ?? (mode === "text" ? "bypassPermissions" : "default");
     await this.backend.start({
       // Only voice mode gets the phone-call persona. Text mode = pure
       // backend-default behavior (Claude Code being Claude Code).
@@ -95,6 +102,7 @@ export class SpeakerAgent {
       sessionId: opts.sessionId,
       resume: opts.resume,
       effort: opts.effort,
+      permissionMode,
     });
     this.started = true;
   }

@@ -45,6 +45,11 @@ export type AgentBackendOpts = {
    * - codex        → ignored (no native equivalent today)
    */
   effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  /**
+   * Tool permission policy. Maps to claude-code's `--permission-mode`
+   * flag. Other backends ignore today.
+   */
+  permissionMode?: "default" | "acceptEdits" | "auto" | "bypassPermissions" | "plan";
 };
 
 export interface AgentBackend {
