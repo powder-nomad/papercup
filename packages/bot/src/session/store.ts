@@ -46,6 +46,13 @@ export type Session = {
    * see resolvePermissionMode() in index.ts.
    */
   permissionMode?: "default" | "acceptEdits" | "auto" | "bypassPermissions" | "plan";
+  /**
+   * MCP server names whose tools the agent is allowed to call. Each entry
+   * expands to `mcp__<name>__*` in the agent's --allowedTools list. The
+   * MCP server itself must be configured in claude's settings or plugins
+   * — papercup doesn't register new servers, it just gates tool access.
+   */
+  allowedMcps?: string[];
 };
 
 export type SessionEffort = NonNullable<Session["effort"]>;
@@ -184,6 +191,19 @@ export class SessionStore {
       delete s.permissionMode;
     } else {
       s.permissionMode = pm;
+    }
+    s.lastActiveAt = Date.now();
+    await this.save();
+    return s;
+  }
+
+  async setAllowedMcps(id: string, mcps: string[]): Promise<Session | undefined> {
+    const s = this.sessions.find((s) => s.id === id);
+    if (!s) return undefined;
+    if (mcps.length === 0) {
+      delete s.allowedMcps;
+    } else {
+      s.allowedMcps = [...new Set(mcps)].sort();
     }
     s.lastActiveAt = Date.now();
     await this.save();

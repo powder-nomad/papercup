@@ -189,12 +189,16 @@ client.on("interactionCreate", async (interaction) => {
       await handleUnbind(interaction);
     } else if (interaction.commandName === "new") {
       await handleNew(interaction);
+    } else if (interaction.commandName === "cancel") {
+      await handleCancel(interaction);
     } else if (interaction.commandName === "model") {
       await handleModel(interaction);
     } else if (interaction.commandName === "effort") {
       await handleEffort(interaction);
     } else if (interaction.commandName === "permissions") {
       await handlePermissions(interaction);
+    } else if (interaction.commandName === "mcp") {
+      await handleMcp(interaction);
     } else if (interaction.commandName === "notify") {
       await handleNotify(interaction);
     }
@@ -269,6 +273,7 @@ async function startTextSession(
     model: session.model,
     effort: session.effort,
     permissionMode: session.permissionMode,
+    allowedMcps: session.allowedMcps,
     mode: "text",
   });
   textChats.set(interaction.channelId, { session, agent });
@@ -401,6 +406,7 @@ async function joinAndStart(
     model: session.model,
     effort: session.effort,
     permissionMode: session.permissionMode,
+    allowedMcps: session.allowedMcps,
     mode: "voice",
   });
   await sessions.touch(session.id);
@@ -491,6 +497,7 @@ async function handleNew(interaction: ChatInputCommandInteraction): Promise<void
   if (prior.model) await sessions.setModel(fresh.id, prior.model);
   if (prior.effort) await sessions.setEffort(fresh.id, prior.effort);
   if (prior.permissionMode) await sessions.setPermissionMode(fresh.id, prior.permissionMode);
+  if (prior.allowedMcps?.length) await sessions.setAllowedMcps(fresh.id, prior.allowedMcps);
   // Refresh from store so all the persisted values land on the in-memory object.
   const refreshed = sessions.findByName(fresh.name) ?? fresh;
   Object.assign(fresh, refreshed);
@@ -505,6 +512,7 @@ async function handleNew(interaction: ChatInputCommandInteraction): Promise<void
       model: fresh.model,
       effort: fresh.effort,
       permissionMode: fresh.permissionMode,
+      allowedMcps: fresh.allowedMcps,
       mode: "voice",
     });
     voice.session = fresh;
@@ -525,6 +533,7 @@ async function handleNew(interaction: ChatInputCommandInteraction): Promise<void
       model: fresh.model,
       effort: fresh.effort,
       permissionMode: fresh.permissionMode,
+      allowedMcps: fresh.allowedMcps,
       mode: "text",
     });
     textChats.set(channelId, { session: fresh, agent });
@@ -536,6 +545,25 @@ async function handleNew(interaction: ChatInputCommandInteraction): Promise<void
       `${fresh.effort ? `\nEffort: \`${fresh.effort}\`` : ""}` +
       `${fresh.permissionMode ? `\nPermissions: \`${fresh.permissionMode}\`` : ""}`,
     );
+  }
+}
+
+async function handleCancel(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session to cancel against.");
+    return;
+  }
+  const agent = active.kind === "voice" ? active.state.agent : active.chat.agent;
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
+  const cancelled = agent.cancel();
+  if (cancelled) {
+    console.log(`[cancel] aborted speaker turn for "${session.name}"`);
+    await interaction.editReply(`✋ Cancelled the in-flight turn for "${session.name}". History preserved; just send another message.`);
+  } else {
+    await interaction.editReply(`Nothing in flight to cancel.`);
   }
 }
 
@@ -651,6 +679,7 @@ async function hotSwapAgent(active: ActiveContainer, session: Session): Promise<
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,
+    allowedMcps: session.allowedMcps,
       mode: "voice",
     });
     await syncBackendId(active.state);
@@ -664,6 +693,7 @@ async function hotSwapAgent(active: ActiveContainer, session: Session): Promise<
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,
+    allowedMcps: session.allowedMcps,
       mode: "text",
     });
   }
@@ -756,6 +786,66 @@ async function handlePermissions(interaction: ChatInputCommandInteraction): Prom
   }
 }
 
+async function handleMcp(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session. /pickup first, then /mcp.");
+    return;
+  }
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
+  const action = interaction.options.getString("action", true) as "enable" | "disable" | "list";
+  const name = interaction.options.getString("name") ?? "";
+  const current = session.allowedMcps ?? [];
+
+  if (action === "list") {
+    const enabled = current.length > 0
+      ? current.map((n) => `\`${n}\``).join(", ")
+      : "_(none)_";
+    await interaction.editReply(
+      `🔌 MCP tools enabled for "${session.name}": ${enabled}\n\n` +
+      `Run \`claude mcp list\` in your terminal to see what servers are available. ` +
+      `Then \`/mcp action:enable name:<server-name>\` adds it for this session.`,
+    );
+    return;
+  }
+
+  if (!name) {
+    await interaction.editReply("`name:` is required for enable/disable.");
+    return;
+  }
+
+  let next: string[];
+  if (action === "enable") {
+    if (current.includes(name)) {
+      await interaction.editReply(`✓ \`${name}\` already enabled for "${session.name}".`);
+      return;
+    }
+    next = [...current, name];
+  } else {
+    if (!current.includes(name)) {
+      await interaction.editReply(`\`${name}\` wasn't enabled for "${session.name}".`);
+      return;
+    }
+    next = current.filter((n) => n !== name);
+  }
+
+  const updated = await sessions.setAllowedMcps(session.id, next);
+  if (!updated) {
+    await interaction.editReply("Couldn't update session — record missing.");
+    return;
+  }
+  Object.assign(session, updated);
+
+  await hotSwapAgent(active, session);
+
+  await interaction.editReply(
+    `🔌 ${action === "enable" ? "Enabled" : "Disabled"} \`${name}\` on "${session.name}". ` +
+    `Now: ${next.length > 0 ? next.map((n) => `\`${n}\``).join(", ") : "_(none)_"}`,
+  );
+}
+
 async function handleNotify(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -845,19 +935,24 @@ async function handleTextIntoActiveLine(
   state: LineState,
   userText: string,
 ): Promise<void> {
-  // Show "Papercup is typing..." immediately so the channel knows we got it.
-  if ("sendTyping" in msg.channel) {
-    msg.channel.sendTyping().catch(() => { /* ignore */ });
-  }
+  // Heartbeat typing — keep "Papercup is typing…" visible for the whole turn.
+  // Discord's typing expires after ~10s, so we ping every 8s while waiting.
+  const stopHeartbeat = beginTypingHeartbeat(msg.channel);
   const tStart = Date.now();
   let reply;
   try {
     reply = await state.agent.respond(userText);
   } catch (err) {
+    stopHeartbeat();
+    if ((err as Error).message === "cancelled") {
+      console.log(`[text→line] cancelled by user`);
+      return;
+    }
     console.error("[text→line] agent failed:", err);
     await msg.reply(`❌ Agent failed: ${(err as Error).message}`);
     return;
   }
+  stopHeartbeat();
   await syncBackendId(state);
   const replyText = reply.text || "(empty)";
   console.log(`[text→line] reply (${reply.elapsedMs}ms): "${replyText}"`);
@@ -881,9 +976,7 @@ async function handleTextIntoActiveLine(
 }
 
 async function handleTextOnlyChat(msg: Message, userText: string): Promise<void> {
-  if ("sendTyping" in msg.channel) {
-    msg.channel.sendTyping().catch(() => { /* ignore */ });
-  }
+  const stopHeartbeat = beginTypingHeartbeat(msg.channel);
 
   let chat = textChats.get(msg.channelId);
   if (!chat) {
@@ -897,6 +990,7 @@ async function handleTextOnlyChat(msg: Message, userText: string): Promise<void>
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,
+    allowedMcps: session.allowedMcps,
       mode: "text",
     });
     chat = { session, agent };
@@ -909,10 +1003,16 @@ async function handleTextOnlyChat(msg: Message, userText: string): Promise<void>
   try {
     reply = await chat.agent.respond(userText);
   } catch (err) {
+    stopHeartbeat();
+    if ((err as Error).message === "cancelled") {
+      console.log(`[text-chat] cancelled by user`);
+      return;
+    }
     console.error("[text-chat] agent failed:", err);
     await msg.reply(`❌ Agent failed: ${(err as Error).message}`);
     return;
   }
+  stopHeartbeat();
   console.log(`[text-chat] reply (${reply.elapsedMs}ms, total ${Date.now() - tStart}ms): "${reply.text}"`);
   await sessions.touch(chat.session.id);
 
@@ -1070,6 +1170,21 @@ async function announceExtensionSettledText(
   } catch (err) {
     console.error("[notify:text] send failed:", err);
   }
+}
+
+/**
+ * Keep "Papercup is typing…" alive in the channel until stop() is called.
+ * Discord's typing indicator expires after ~10s; we ping every 8s while a
+ * turn is in flight so the user has a continuous visible cue.
+ */
+function beginTypingHeartbeat(channel: TextBasedChannel): () => void {
+  if (!("sendTyping" in channel)) {
+    return () => {};
+  }
+  const tick = () => channel.sendTyping().catch(() => { /* ignore */ });
+  tick();
+  const interval = setInterval(tick, 8_000);
+  return () => clearInterval(interval);
 }
 
 function playBack(state: LineState, pcm: Buffer): void {

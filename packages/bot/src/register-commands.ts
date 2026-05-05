@@ -70,6 +70,10 @@ const commands = [
     .setDescription("Hang up — bot leaves the voice channel; session is preserved")
     .toJSON(),
   new SlashCommandBuilder()
+    .setName("cancel")
+    .setDescription("Abort the in-flight agent turn for the active session")
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName("new")
     .setDescription("Start a fresh session in the active container, inheriting model/effort/permissions")
     .addStringOption((o) =>
@@ -146,6 +150,28 @@ const commands = [
           { name: "max (Opus only)", value: "max" },
           { name: "default", value: "default" },
         ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("mcp")
+    .setDescription("Enable/disable MCP servers' tools for the active session")
+    .addStringOption((o) =>
+      o
+        .setName("action")
+        .setDescription("enable, disable, or list")
+        .setRequired(true)
+        .addChoices(
+          { name: "enable", value: "enable" },
+          { name: "disable", value: "disable" },
+          { name: "list", value: "list" },
+        ),
+    )
+    .addStringOption((o) =>
+      o
+        .setName("name")
+        .setDescription("MCP server name (e.g. plugin:ecc:playwright). Required for enable/disable.")
+        .setRequired(false)
+        .setMaxLength(120),
     )
     .toJSON(),
   new SlashCommandBuilder()

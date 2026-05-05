@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import type { AgentBackend, AgentBackendOpts, AgentReply } from "./backend.js";
 
 /**
@@ -14,6 +14,7 @@ export class CodexBackend implements AgentBackend {
   private threadId?: string;
   private opts!: AgentBackendOpts;
   private firstTurn = true;
+  private inFlight?: ChildProcess;
 
   async start(opts: AgentBackendOpts): Promise<void> {
     this.opts = opts;
@@ -36,6 +37,15 @@ export class CodexBackend implements AgentBackend {
 
   stop(): void {
     // Codex stores threads in ~/.codex; nothing to tear down here.
+    this.cancel();
+  }
+
+  cancel(): boolean {
+    if (!this.inFlight) return false;
+    try {
+      this.inFlight.kill("SIGTERM");
+    } catch { /* ignore */ }
+    return true;
   }
 
   async respond(userText: string): Promise<AgentReply> {
@@ -75,10 +85,24 @@ export class CodexBackend implements AgentBackend {
     args.push(prompt);
 
     const t0 = Date.now();
-    const { stdout, stderr, code } = await runCodex(args);
+    const proc = spawn("codex", args, { stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp" });
+    this.inFlight = proc;
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (c: Buffer) => (stdout += c.toString()));
+    proc.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
+    const code = await new Promise<number>((resolve, reject) => {
+      proc.on("error", reject);
+      proc.on("exit", (c) => resolve(c ?? -1));
+    }).finally(() => {
+      this.inFlight = undefined;
+    });
     const elapsedMs = Date.now() - t0;
 
     if (code !== 0) {
+      if (code === 143 || proc.killed) {
+        throw new Error("cancelled");
+      }
       throw new Error(`codex exited ${code}: ${stderr.slice(-500)}`);
     }
 
@@ -99,17 +123,6 @@ export class CodexBackend implements AgentBackend {
   }
 }
 
-function runCodex(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("codex", args, { stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp" });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (c) => (stdout += c.toString()));
-    proc.stderr.on("data", (c) => (stderr += c.toString()));
-    proc.on("error", reject);
-    proc.on("exit", (code) => resolve({ stdout, stderr, code: code ?? -1 }));
-  });
-}
 
 type CodexParseResult = {
   text: string;

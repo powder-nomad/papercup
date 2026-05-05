@@ -50,6 +50,11 @@ export type AgentBackendOpts = {
    * flag. Other backends ignore today.
    */
   permissionMode?: "default" | "acceptEdits" | "auto" | "bypassPermissions" | "plan";
+  /**
+   * Extra MCP server names whose tools the agent should be allowed to call.
+   * Expanded to `mcp__<name>__*` in --allowedTools. Other backends ignore.
+   */
+  allowedMcps?: string[];
 };
 
 export interface AgentBackend {
@@ -61,6 +66,12 @@ export interface AgentBackend {
   reset(): void;
   /** Tear down. */
   stop(): void;
+  /**
+   * Abort the current in-flight respond() if one is running. Returns true
+   * if a turn was actually cancelled, false if nothing was in flight.
+   * Backends without a way to cancel return false silently.
+   */
+  cancel?(): boolean;
   /**
    * Return whatever id the backend would use to resume this conversation
    * later. For claude-code this is the --session-id UUID; for codex it's the

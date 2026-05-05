@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { AgentBackend, AgentBackendOpts, AgentReply } from "./backend.js";
 
@@ -13,6 +13,8 @@ export class ClaudeCodeBackend implements AgentBackend {
   private sessionId?: string;
   private firstTurn = true;
   private opts!: AgentBackendOpts;
+  /** Currently-running `claude -p` child, if any. Used by cancel(). */
+  private inFlight?: ChildProcess;
 
   async start(opts: AgentBackendOpts): Promise<void> {
     this.opts = opts;
@@ -29,6 +31,16 @@ export class ClaudeCodeBackend implements AgentBackend {
 
   stop(): void {
     // Sessions live in Claude Code's local store; nothing to tear down here.
+    // But if a turn is in flight when stop is called, kill it.
+    this.cancel();
+  }
+
+  cancel(): boolean {
+    if (!this.inFlight) return false;
+    try {
+      this.inFlight.kill("SIGTERM");
+    } catch { /* ignore */ }
+    return true;
   }
 
   getBackendId(): string | undefined {
@@ -43,9 +55,14 @@ export class ClaudeCodeBackend implements AgentBackend {
     // inside extensions, never on the speaker's hot path.
     const baseTools = process.env.SPEAKER_TOOLS ?? "Read Glob Grep";
     const mcpUrl = process.env.PAPERCUP_MCP_URL;
-    const allowedTools = mcpUrl
-      ? `${baseTools} mcp__papercup__spawn_extension mcp__papercup__check_extension mcp__papercup__list_extensions`
-      : baseTools;
+    const papercupTools = mcpUrl
+      ? "mcp__papercup__spawn_extension mcp__papercup__check_extension mcp__papercup__list_extensions"
+      : "";
+    // /mcp enable adds these per-session — turns into mcp__<name>__* glob.
+    const extraMcpTools = (this.opts.allowedMcps ?? [])
+      .map((name) => `mcp__${name}__*`)
+      .join(" ");
+    const allowedTools = [baseTools, papercupTools, extraMcpTools].filter(Boolean).join(" ");
 
     const args: string[] = [
       "-p", userText,
@@ -87,10 +104,26 @@ export class ClaudeCodeBackend implements AgentBackend {
     }
 
     const t0 = Date.now();
-    const { stdout, stderr, code } = await runClaude(args);
+    const proc = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp" });
+    this.inFlight = proc;
+    let stdout = "";
+    let stderr = "";
+    proc.stdout?.on("data", (c: Buffer) => (stdout += c.toString()));
+    proc.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
+    const code = await new Promise<number>((resolve, reject) => {
+      proc.on("error", reject);
+      proc.on("exit", (c) => resolve(c ?? -1));
+    }).finally(() => {
+      this.inFlight = undefined;
+    });
     const elapsedMs = Date.now() - t0;
 
     if (code !== 0) {
+      // SIGTERM → exit code 143 (or signal-set; node maps to negative). Surface
+      // a clear "cancelled" so callers can distinguish from real failures.
+      if (code === 143 || proc.killed) {
+        throw new Error("cancelled");
+      }
       throw new Error(`claude exited ${code}: ${stderr.slice(0, 500)}`);
     }
 
@@ -111,16 +144,6 @@ export class ClaudeCodeBackend implements AgentBackend {
   }
 }
 
-function runClaude(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-  return new Promise((resolve, reject) => {
-    // Run from /tmp so the speaker agent doesn't pick up the bot's own
-    // CLAUDE.md, project memory, or git context.
-    const proc = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp" });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (c) => (stdout += c.toString()));
-    proc.stderr.on("data", (c) => (stderr += c.toString()));
-    proc.on("error", reject);
-    proc.on("exit", (code) => resolve({ stdout, stderr, code: code ?? -1 }));
-  });
-}
+// Note: spawn() above runs from cwd: "/tmp" so the speaker agent doesn't pick
+// up the bot's own CLAUDE.md, project memory, or git context. (User-level
+// CLAUDE.md at ~/.claude/CLAUDE.md still loads.)

@@ -75,6 +75,8 @@ export type SpeakerAgentOpts = {
   mode?: "voice" | "text";
   /** Tool permission policy; falls back to mode-aware default. */
   permissionMode?: "default" | "acceptEdits" | "auto" | "bypassPermissions" | "plan";
+  /** Extra MCP servers whose tools the agent is allowed to call. */
+  allowedMcps?: string[];
 };
 
 export class SpeakerAgent {
@@ -103,6 +105,7 @@ export class SpeakerAgent {
       resume: opts.resume,
       effort: opts.effort,
       permissionMode,
+      allowedMcps: opts.allowedMcps,
     });
     this.started = true;
   }
@@ -114,6 +117,11 @@ export class SpeakerAgent {
   async respond(userText: string): Promise<AgentReply> {
     if (!this.started) await this.start();
     return this.backend.respond(userText);
+  }
+
+  /** Aborts the current respond() if any is running. */
+  cancel(): boolean {
+    return this.backend.cancel?.() ?? false;
   }
 
   /** Backend's current session/thread id (post-start, post-respond). */

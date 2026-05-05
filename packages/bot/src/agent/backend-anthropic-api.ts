@@ -7,6 +7,7 @@ export class AnthropicApiBackend implements AgentBackend {
   private client?: Anthropic;
   private opts!: AgentBackendOpts;
   private history: Turn[] = [];
+  private inFlight?: AbortController;
 
   async start(opts: AgentBackendOpts): Promise<void> {
     this.opts = opts;
@@ -19,7 +20,14 @@ export class AnthropicApiBackend implements AgentBackend {
   }
 
   stop(): void {
+    this.cancel();
     this.history = [];
+  }
+
+  cancel(): boolean {
+    if (!this.inFlight) return false;
+    this.inFlight.abort();
+    return true;
   }
 
   async respond(userText: string): Promise<AgentReply> {
@@ -43,15 +51,29 @@ export class AnthropicApiBackend implements AgentBackend {
       : this.opts.maxTokens ?? 200;
 
     const t0 = Date.now();
-    const resp = await this.client.messages.create({
-      model: this.opts.model ?? "claude-haiku-4-5-20251001",
-      max_tokens: maxTokens,
-      // Voice mode supplies a system prompt; text mode omits it so the model
-      // behaves as a default Claude assistant.
-      ...(this.opts.systemPrompt ? { system: this.opts.systemPrompt } : {}),
-      messages: this.history.map((t) => ({ role: t.role, content: t.content })),
-      ...(thinking ? { thinking } : {}),
-    });
+    this.inFlight = new AbortController();
+    let resp;
+    try {
+      resp = await this.client.messages.create(
+        {
+          model: this.opts.model ?? "claude-haiku-4-5-20251001",
+          max_tokens: maxTokens,
+          // Voice mode supplies a system prompt; text mode omits it so the model
+          // behaves as a default Claude assistant.
+          ...(this.opts.systemPrompt ? { system: this.opts.systemPrompt } : {}),
+          messages: this.history.map((t) => ({ role: t.role, content: t.content })),
+          ...(thinking ? { thinking } : {}),
+        },
+        { signal: this.inFlight.signal },
+      );
+    } catch (err) {
+      if (this.inFlight.signal.aborted) {
+        throw new Error("cancelled");
+      }
+      throw err;
+    } finally {
+      this.inFlight = undefined;
+    }
     const elapsedMs = Date.now() - t0;
 
     const text = resp.content
