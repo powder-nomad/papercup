@@ -26,6 +26,7 @@ import {
 } from "@discordjs/voice";
 import prism from "prism-media";
 import { Readable } from "node:stream";
+import { spawn } from "node:child_process";
 import { SileroVad } from "@papercup/voice-stack/vad";
 import { WhisperSidecar } from "@papercup/voice-stack/stt";
 import { createTts, type TtsEngine } from "@papercup/voice-stack/tts";
@@ -886,11 +887,34 @@ async function handleMcp(interaction: ChatInputCommandInteraction): Promise<void
     const enabled = current.length > 0
       ? current.map((n) => `\`${n}\``).join(", ")
       : "_(none)_";
-    await interaction.editReply(
-      `🔌 MCP tools enabled for "${session.name}": ${enabled}\n\n` +
-      `Run \`claude mcp list\` in your terminal to see what servers are available. ` +
-      `Then \`/mcp action:enable name:<server-name>\` adds it for this session.`,
-    );
+
+    // Discover available MCPs by shelling out to `claude mcp list`. Parses
+    // lines like "plugin:ecc:playwright: <url-or-cmd> - ✓ Connected".
+    const available = await listAvailableMcps();
+    const connected = available.filter((m) => m.connected);
+    const needsAuth = available.filter((m) => !m.connected);
+
+    const lines: string[] = [];
+    lines.push(`🔌 **MCPs enabled for \`${session.name}\`:** ${enabled}`);
+    lines.push("");
+    if (connected.length > 0) {
+      lines.push(`**Available + connected** (use \`/mcp action:enable name:<n>\`):`);
+      for (const m of connected.slice(0, 20)) {
+        const onSession = current.includes(m.name) ? " ✓" : "";
+        lines.push(`• \`${m.name}\`${onSession}`);
+      }
+      if (connected.length > 20) lines.push(`… ${connected.length - 20} more`);
+    } else if (available.length === 0) {
+      lines.push(`_No MCPs configured. Add one with \`claude mcp add <name> <command>\` in your terminal._`);
+    }
+    if (needsAuth.length > 0) {
+      lines.push("");
+      lines.push(`**Need authentication** (won't work until set up):`);
+      for (const m of needsAuth.slice(0, 10)) {
+        lines.push(`• \`${m.name}\``);
+      }
+    }
+    await interaction.editReply(lines.join("\n").slice(0, 1900));
     return;
   }
 
@@ -1340,6 +1364,31 @@ function beginTypingHeartbeat(channel: TextBasedChannel): () => void {
   tick();
   const interval = setInterval(tick, 8_000);
   return () => clearInterval(interval);
+}
+
+/**
+ * Discover MCP servers available on this box by shelling out to
+ * `claude mcp list`. Parses lines like:
+ *   plugin:ecc:playwright: npx -y @playwright/mcp@0.0.69 - ✓ Connected
+ *   claude.ai Gmail: https://gmailmcp.googleapis.com/mcp/v1 - ! Needs authentication
+ */
+async function listAvailableMcps(): Promise<{ name: string; connected: boolean }[]> {
+  return new Promise((resolve) => {
+    const proc = spawn("claude", ["mcp", "list"], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    proc.stdout?.on("data", (c: Buffer) => (stdout += c.toString()));
+    proc.on("error", () => resolve([]));
+    proc.on("exit", () => {
+      const out: { name: string; connected: boolean }[] = [];
+      for (const line of stdout.split("\n")) {
+        const m = line.match(/^([^:]+(?::[^:]+)*?):\s.*\s-\s(✓\s*Connected|!\s*Needs authentication)/);
+        if (m && m[1] && m[2]) {
+          out.push({ name: m[1].trim(), connected: m[2].includes("Connected") });
+        }
+      }
+      resolve(out);
+    });
+  });
 }
 
 function playBack(state: LineState, pcm: Buffer): void {
