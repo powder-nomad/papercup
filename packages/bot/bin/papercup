@@ -6,6 +6,14 @@
 #   bin/papercup status    — show pid + uptime
 #   bin/papercup logs      — tail -F the log
 #   bin/papercup tail [N]  — last N lines (default 50)
+#
+# We launch the bot inside its own user-level systemd unit
+# (`papercup-bot.service`) when systemd-run --user is available, so it lives
+# in a separate cgroup from whatever shell/tmux session spawned it. Without
+# that, a tmux scope getting OOM-killed by the kernel takes the bot with it
+# (we lost a session this way once because the launching shell sat under
+# `tmux-spawn-XXXX.scope`). The plain `setsid` path is kept as a fallback
+# for hosts without user-level systemd.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -13,48 +21,106 @@ cd "$ROOT"
 
 PID_FILE="$ROOT/logs/bot.pid"
 LOG_FILE="$ROOT/logs/bot.log"
+UNIT_NAME="papercup-bot.service"
 mkdir -p "$ROOT/logs"
 
+use_systemd() {
+  command -v systemd-run >/dev/null 2>&1 \
+    && command -v systemctl >/dev/null 2>&1 \
+    && systemctl --user is-system-running >/dev/null 2>&1
+}
+
+unit_active() {
+  systemctl --user is-active --quiet "$UNIT_NAME" 2>/dev/null
+}
+
+unit_pid() {
+  systemctl --user show -p MainPID --value "$UNIT_NAME" 2>/dev/null
+}
+
 is_running() {
+  if use_systemd && unit_active; then
+    return 0
+  fi
   [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
 }
 
 start() {
   if is_running; then
-    echo "already running (pid $(cat "$PID_FILE"))"
+    echo "already running (pid $(cat "$PID_FILE" 2>/dev/null || unit_pid))"
     return 0
   fi
-  setsid bash -c "exec npm run --silent start >> '$LOG_FILE' 2>&1" </dev/null >/dev/null 2>&1 &
-  local pid=$!
-  disown
-  echo "$pid" > "$PID_FILE"
-  sleep 2
-  if is_running; then
-    echo "started pid $pid, logging to $LOG_FILE"
+  if use_systemd; then
+    # Transient user-level service. --collect drops the unit on exit so we
+    # don't accumulate failed-state stubs across crashes.
+    systemd-run --user --quiet --collect --unit="$UNIT_NAME" \
+      --working-directory="$ROOT" \
+      --property=StandardOutput="append:$LOG_FILE" \
+      --property=StandardError="append:$LOG_FILE" \
+      --property=Restart=on-failure \
+      --property=RestartSec=3s \
+      bash -c 'exec npm run --silent start'
+    sleep 2
+    local pid
+    pid="$(unit_pid)"
+    if [[ -n "$pid" && "$pid" != "0" ]] && unit_active; then
+      echo "$pid" > "$PID_FILE"
+      echo "started pid $pid (unit $UNIT_NAME), logging to $LOG_FILE"
+    else
+      echo "failed to start — see $LOG_FILE and 'systemctl --user status $UNIT_NAME'"
+      return 1
+    fi
   else
-    echo "failed to start — see $LOG_FILE"; return 1
+    setsid bash -c "exec npm run --silent start >> '$LOG_FILE' 2>&1" </dev/null >/dev/null 2>&1 &
+    local pid=$!
+    disown
+    echo "$pid" > "$PID_FILE"
+    sleep 2
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+      echo "started pid $pid, logging to $LOG_FILE"
+    else
+      echo "failed to start — see $LOG_FILE"; return 1
+    fi
   fi
 }
 
 stop() {
-  if ! is_running; then
-    echo "not running"
+  if use_systemd && unit_active; then
+    systemctl --user stop "$UNIT_NAME" >/dev/null 2>&1 || true
+    systemctl --user reset-failed "$UNIT_NAME" >/dev/null 2>&1 || true
     rm -f "$PID_FILE"
+    # Stragglers from a prior non-systemd start, if any.
+    pkill -f "tsx src/index.ts" 2>/dev/null || true
+    echo "stopped"
+    return 0
+  fi
+  if [[ ! -f "$PID_FILE" ]] || ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    rm -f "$PID_FILE"
+    pkill -f "tsx src/index.ts" 2>/dev/null || true
+    echo "not running"
     return 0
   fi
   local pid
   pid=$(cat "$PID_FILE")
-  # Kill the npm-run child tree, not just the wrapper.
   pkill -P "$pid" 2>/dev/null || true
   kill "$pid" 2>/dev/null || true
-  # Belt-and-suspenders: any leftover tsx for this project.
   pkill -f "tsx src/index.ts" 2>/dev/null || true
   rm -f "$PID_FILE"
   echo "stopped"
 }
 
 status() {
-  if is_running; then
+  if use_systemd && unit_active; then
+    local pid
+    pid="$(unit_pid)"
+    echo "running (pid $pid, unit $UNIT_NAME)"
+    ps -o pid,etime,cmd -p "$pid" 2>/dev/null || true
+    echo
+    echo "child processes:"
+    pgrep -fa "tsx src/index.ts" || echo "  (none)"
+    return 0
+  fi
+  if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     local pid
     pid=$(cat "$PID_FILE")
     echo "running (pid $pid)"
