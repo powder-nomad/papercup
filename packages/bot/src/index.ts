@@ -105,6 +105,10 @@ const lines = new Map<string, LineState>();
 type TextChat = { session: Session; agent: SpeakerAgent };
 const textChats = new Map<string, TextChat>();
 
+// Per-guild pinned "active session" message in the bound channel.
+// {channelId, messageId} so we can edit-in-place on knob changes.
+const sessionPins = new Map<string, { channelId: string; messageId: string }>();
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -293,6 +297,9 @@ async function startTextSession(
   if (session.effort) lines.push(`Effort: \`${session.effort}\``);
   lines.push(`Toggle extension-completion alerts with \`/notify state:on\`. End with \`/hangup\`.`);
   await interaction.editReply(lines.join("\n"));
+  if (interaction.guildId) {
+    void updateSessionPin(interaction.guildId, session);
+  }
 }
 
 async function handleResume(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -430,6 +437,7 @@ async function joinAndStart(
     ? `🔁 Resumed "${session.name}" — listening...`
     : `🎤 New session "${session.name}" — listening...`;
   await renderStatus(state, greeting);
+  void updateSessionPin(guildId, session);
 }
 
 async function handleHangup(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -449,6 +457,7 @@ async function handleHangup(interaction: ChatInputCommandInteraction): Promise<v
     lines.delete(guildId);
     const sessName = state ? `"${state.session.name}"` : "";
     await interaction.editReply(`Hung up${sessName ? ` — ${sessName} preserved` : ""}.`);
+    void clearSessionPin(guildId);
     return;
   }
 
@@ -458,6 +467,7 @@ async function handleHangup(interaction: ChatInputCommandInteraction): Promise<v
     try { chat.agent.stop?.(); } catch { /* ignore */ }
     textChats.delete(interaction.channelId);
     await interaction.editReply(`📝 Text session "${chat.session.name}" closed — preserved for /resume.`);
+    void clearSessionPin(guildId);
     return;
   }
 
@@ -524,6 +534,7 @@ async function handleNew(interaction: ChatInputCommandInteraction): Promise<void
       `${fresh.effort ? `\nEffort: \`${fresh.effort}\`` : ""}` +
       `${fresh.permissionMode ? `\nPermissions: \`${fresh.permissionMode}\`` : ""}`,
     );
+    void updateSessionPin(guildId, fresh);
   } else if (chat) {
     try { chat.agent.stop?.(); } catch { /* ignore */ }
     const agent = new SpeakerAgent();
@@ -545,6 +556,7 @@ async function handleNew(interaction: ChatInputCommandInteraction): Promise<void
       `${fresh.effort ? `\nEffort: \`${fresh.effort}\`` : ""}` +
       `${fresh.permissionMode ? `\nPermissions: \`${fresh.permissionMode}\`` : ""}`,
     );
+    void updateSessionPin(guildId, fresh);
   }
 }
 
@@ -596,6 +608,7 @@ async function handleRename(interaction: ChatInputCommandInteraction): Promise<v
     const renamed = await sessions.rename(session.id, newName);
     Object.assign(session, renamed);
     await interaction.editReply(`Renamed → **${renamed.name}**`);
+    void refreshSessionPinFor(active, session);
   } catch (err) {
     await interaction.editReply(`❌ ${(err as Error).message}`);
   }
@@ -667,6 +680,23 @@ function findActiveContainer(interaction: ChatInputCommandInteraction): ActiveCo
   return undefined;
 }
 
+async function refreshSessionPinFor(active: ActiveContainer, session: Session): Promise<void> {
+  const guildId = active.kind === "voice"
+    ? (active.state.connection?.joinConfig.guildId)
+    : undefined;
+  // For text chats we don't have a direct guildId — find via Discord channel.
+  if (active.kind === "text") {
+    const channel = await client.channels.fetch(active.channelId).catch(() => null);
+    if (channel && "guildId" in channel && channel.guildId) {
+      await updateSessionPin(channel.guildId, session);
+    }
+    return;
+  }
+  if (guildId) {
+    await updateSessionPin(guildId, session);
+  }
+}
+
 async function hotSwapAgent(active: ActiveContainer, session: Session): Promise<void> {
   // Re-start the agent under the new model/effort. Backend resume preserves history.
   if (active.kind === "voice") {
@@ -718,6 +748,7 @@ async function handleModel(interaction: ChatInputCommandInteraction): Promise<vo
   Object.assign(session, updated);
 
   await hotSwapAgent(active, session);
+  void refreshSessionPinFor(active, session);
 
   if (session.model) {
     await interaction.editReply(`🧠 "${session.name}" model → \`${session.model}\`. History preserved.`);
@@ -747,6 +778,7 @@ async function handleEffort(interaction: ChatInputCommandInteraction): Promise<v
   Object.assign(session, updated);
 
   await hotSwapAgent(active, session);
+  void refreshSessionPinFor(active, session);
 
   if (session.effort) {
     await interaction.editReply(`🧠 "${session.name}" effort → \`${session.effort}\`. History preserved.`);
@@ -777,6 +809,7 @@ async function handlePermissions(interaction: ChatInputCommandInteraction): Prom
   Object.assign(session, updated);
 
   await hotSwapAgent(active, session);
+  void refreshSessionPinFor(active, session);
 
   if (session.permissionMode) {
     await interaction.editReply(`🔐 "${session.name}" permission mode → \`${session.permissionMode}\`.`);
@@ -839,6 +872,7 @@ async function handleMcp(interaction: ChatInputCommandInteraction): Promise<void
   Object.assign(session, updated);
 
   await hotSwapAgent(active, session);
+  void refreshSessionPinFor(active, session);
 
   await interaction.editReply(
     `🔌 ${action === "enable" ? "Enabled" : "Disabled"} \`${name}\` on "${session.name}". ` +
@@ -870,6 +904,7 @@ async function handleNotify(interaction: ChatInputCommandInteraction): Promise<v
       ? `🔔 Extension-completion alerts ON for "${session.name}" — delivered as ${surface}.`
       : `🔕 Alerts OFF for "${session.name}".`,
   );
+  void refreshSessionPinFor(active, session);
 }
 
 async function syncBackendId(state: LineState): Promise<void> {
@@ -1170,6 +1205,76 @@ async function announceExtensionSettledText(
   } catch (err) {
     console.error("[notify:text] send failed:", err);
   }
+}
+
+/**
+ * Pin a message in the guild's bound channel showing the currently-active
+ * session card (name + mode/model/effort/permissions/mcps/notify). Edits in
+ * place if a pin already exists; creates + pins a new message otherwise.
+ *
+ * Skips silently when:
+ *  - The guild has no /bind config
+ *  - The bound channel can't be fetched
+ *  - The bot lacks MANAGE_MESSAGES (pin attempt fails — message still posts)
+ */
+async function updateSessionPin(guildId: string, session: Session): Promise<void> {
+  const boundChannelId = guildConfig.get(guildId).boundTextChannelId ?? boundTextChannelId;
+  if (!boundChannelId) return;
+
+  const channel = await client.channels.fetch(boundChannelId).catch(() => null);
+  if (!channel || !("send" in channel) || !("messages" in channel)) return;
+
+  const lines: string[] = [];
+  lines.push(`📍 **Active session: \`${session.name}\`**`);
+  lines.push(`Mode: \`${session.mode ?? "voice"}\``);
+  if (session.model) lines.push(`Model: \`${session.model}\``);
+  if (session.effort) lines.push(`Effort: \`${session.effort}\``);
+  if (session.permissionMode) lines.push(`Permissions: \`${session.permissionMode}\``);
+  if (session.allowedMcps?.length) {
+    lines.push(`MCPs: ${session.allowedMcps.map((n) => `\`${n}\``).join(", ")}`);
+  }
+  if (session.notify) lines.push(`🔔 Extension-completion notify: on`);
+  lines.push(`-# Pin updates on each /model, /effort, /permissions, /mcp, /notify, /rename, /new. Unpins on /hangup.`);
+  const text = lines.join("\n");
+
+  const existing = sessionPins.get(guildId);
+  if (existing && existing.channelId === boundChannelId) {
+    try {
+      const msg = await channel.messages.fetch(existing.messageId);
+      await msg.edit(text);
+      return;
+    } catch {
+      // Pinned message was deleted; fall through to create a new one.
+      sessionPins.delete(guildId);
+    }
+  }
+
+  try {
+    const sent = await channel.send(text);
+    try {
+      await sent.pin();
+    } catch (err) {
+      console.warn(`[pin] sent but couldn't pin (missing MANAGE_MESSAGES?):`, (err as Error).message);
+    }
+    sessionPins.set(guildId, { channelId: boundChannelId, messageId: sent.id });
+  } catch (err) {
+    console.error(`[pin] failed to send session card:`, (err as Error).message);
+  }
+}
+
+async function clearSessionPin(guildId: string): Promise<void> {
+  const existing = sessionPins.get(guildId);
+  if (!existing) return;
+  sessionPins.delete(guildId);
+
+  const channel = await client.channels.fetch(existing.channelId).catch(() => null);
+  if (!channel || !("messages" in channel)) return;
+
+  try {
+    const msg = await channel.messages.fetch(existing.messageId);
+    await msg.unpin().catch(() => { /* ignore — pin might already be gone */ });
+    await msg.delete().catch(() => { /* ignore */ });
+  } catch { /* message might have been deleted manually */ }
 }
 
 /**
