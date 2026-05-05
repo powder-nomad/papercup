@@ -1437,50 +1437,103 @@ async function ingestAttachments(msg: Message): Promise<string> {
 }
 
 /**
- * Send a long text reply as multiple Discord messages instead of truncating
- * with "…". Discord's per-message ceiling is 2000 chars; we use 1950 for a
- * safety margin. Splits prefer paragraph boundaries, then sentence/newline,
- * then mid-line as a last resort. Code-block fences are preserved across
- * splits so renderers don't choke.
- *
- * Files (if any) attach to the LAST chunk only — the user gets one
- * conversational reply chain plus the artifacts at the end.
+ * Markdown-aware splitter for Discord replies. Discord's per-message ceiling
+ * is 2000 chars; we cap at 1950 for safety. The fix avoids these footguns:
+ *  - Don't split inside ``` fenced blocks without closing + reopening with
+ *    the same language tag.
+ *  - Don't split inside `inline code` (would orphan a backtick).
+ *  - Don't split inside [link](url) syntax.
+ *  - Prefer paragraph / newline / sentence boundaries — and if we're inside
+ *    a code block, prefer splitting at a code-line boundary.
+ */
+function splitMarkdownSafe(text: string, max: number): string[] {
+  if (text.length <= max) return [text];
+
+  // For a `remaining` string, find the open code block at offset `max`
+  // (if any), so we know whether to close + reopen with a language tag.
+  // Returns {inBlock: true, lang} if offset `max` is inside a fenced block.
+  const blockStateAt = (s: string, offset: number): { inBlock: boolean; lang: string } => {
+    let pos = 0;
+    let inBlock = false;
+    let lang = "";
+    const re = /```([^\n`]*)\n/g;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index >= offset) break;
+      if (!inBlock) {
+        inBlock = true;
+        lang = (m[1] ?? "").trim();
+      } else {
+        inBlock = false;
+        lang = "";
+      }
+      pos = m.index + m[0].length;
+    }
+    void pos;
+    return { inBlock, lang };
+  };
+
+  // Find a safe cut <= max in `s`. Returns the cut index.
+  const findSafeCut = (s: string): number => {
+    const window = s.slice(0, max);
+    const candidates: number[] = [];
+    const para = window.lastIndexOf("\n\n");
+    const nl = window.lastIndexOf("\n");
+    const sent = window.lastIndexOf(". ");
+    const word = window.lastIndexOf(" ");
+    for (const c of [para, nl, sent, word]) {
+      if (c >= max * 0.4) candidates.push(c);
+    }
+    candidates.push(max - 1);
+
+    for (const cut of candidates) {
+      const piece = s.slice(0, cut);
+      // Avoid severing single-backtick inline code (odd backtick count where
+      // ``` doesn't apply). Easier heuristic: count standalone single
+      // backticks not part of triples.
+      const noTriples = piece.replace(/```/g, "");
+      const singles = (noTriples.match(/`/g) ?? []).length;
+      if (singles % 2 !== 0) continue;
+      // Don't sever an in-progress markdown link.
+      if (/\[[^\]]*$/.test(piece)) continue;
+      if (/\]\([^)]*$/.test(piece)) continue;
+      return cut;
+    }
+    return max;
+  };
+
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > max) {
+    const cut = findSafeCut(remaining);
+    let piece = remaining.slice(0, cut);
+    let next = remaining.slice(cut).replace(/^\n+/, "");
+
+    const { inBlock, lang } = blockStateAt(remaining, cut);
+    if (inBlock) {
+      if (!piece.endsWith("\n")) piece += "\n";
+      piece += "```";
+      next = "```" + (lang || "") + "\n" + next;
+    }
+
+    chunks.push(piece);
+    remaining = next;
+  }
+  chunks.push(remaining);
+  return chunks;
+}
+
+/**
+ * Send a long text reply as multiple Discord messages. Files (if any)
+ * attach to the LAST chunk only — user gets the explanation followed by
+ * the artifact.
  */
 async function replyChunked(
   msg: Message,
   content: string,
   files?: string[],
 ): Promise<void> {
-  const MAX = 1950;
-  const text = content || "(empty)";
-  const chunks: string[] = [];
-
-  let remaining = text;
-  let inCodeBlock = false;
-  while (remaining.length > MAX) {
-    let cut = remaining.lastIndexOf("\n\n", MAX);
-    if (cut < MAX * 0.5) cut = remaining.lastIndexOf("\n", MAX);
-    if (cut < MAX * 0.5) cut = remaining.lastIndexOf(". ", MAX);
-    if (cut < MAX * 0.5) cut = MAX;
-
-    let piece = remaining.slice(0, cut);
-    // Track code-block state and re-fence across the split if needed.
-    const fences = (piece.match(/```/g) || []).length;
-    if (fences % 2 === 1) inCodeBlock = !inCodeBlock;
-    if (inCodeBlock) piece += "\n```";
-    chunks.push(piece);
-
-    remaining = remaining.slice(cut).replace(/^\n+/, "");
-    if (inCodeBlock) {
-      // Reopen the fence on the next chunk; we don't know the language so
-      // use plain ``` (renders fine).
-      remaining = "```\n" + remaining;
-    }
-  }
-  chunks.push(remaining);
-
-  // First chunk uses msg.reply (quote); subsequent chunks are channel sends
-  // so we don't blow up the reply UI. Files only on the last chunk.
+  const chunks = splitMarkdownSafe(content || "(empty)", 1950);
   const channel = msg.channel;
   for (let i = 0; i < chunks.length; i++) {
     const isLast = i === chunks.length - 1;
