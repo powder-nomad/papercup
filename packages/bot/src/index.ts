@@ -1088,13 +1088,11 @@ async function handleTextIntoActiveLine(
   console.log(`[text→line] reply (${reply.elapsedMs}ms): "${replyText}"`);
   await sessions.touch(state.session.id);
 
-  // Reply in chat for the visible record. Attach any files the agent
-  // wrote to the outbox (capped at Discord's 10-file / 25MB-each limits).
+  // Reply in chat for the visible record. Splits long replies into
+  // multiple messages instead of truncating; outbox files attach to the
+  // last chunk.
   const files = outboxDir ? await scanOutbox(outboxDir) : [];
-  await msg.reply({
-    content: replyText.length > 1900 ? replyText.slice(0, 1897) + "…" : replyText,
-    ...(files.length ? { files } : {}),
-  });
+  await replyChunked(msg, replyText, files);
 
   // Also speak it on the active voice line.
   if (reply.text) {
@@ -1153,10 +1151,7 @@ async function handleTextOnlyChat(msg: Message, userText: string, outboxDir?: st
 
   const replyText = reply.text || "(empty)";
   const files = outboxDir ? await scanOutbox(outboxDir) : [];
-  await msg.reply({
-    content: replyText.length > 1900 ? replyText.slice(0, 1897) + "…" : replyText,
-    ...(files.length ? { files } : {}),
-  });
+  await replyChunked(msg, replyText, files);
 }
 
 async function handleSay(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1439,6 +1434,70 @@ async function ingestAttachments(msg: Message): Promise<string> {
     " Read returns vision input automatically when the model supports it:]",
     ...lines,
   ].join("\n");
+}
+
+/**
+ * Send a long text reply as multiple Discord messages instead of truncating
+ * with "…". Discord's per-message ceiling is 2000 chars; we use 1950 for a
+ * safety margin. Splits prefer paragraph boundaries, then sentence/newline,
+ * then mid-line as a last resort. Code-block fences are preserved across
+ * splits so renderers don't choke.
+ *
+ * Files (if any) attach to the LAST chunk only — the user gets one
+ * conversational reply chain plus the artifacts at the end.
+ */
+async function replyChunked(
+  msg: Message,
+  content: string,
+  files?: string[],
+): Promise<void> {
+  const MAX = 1950;
+  const text = content || "(empty)";
+  const chunks: string[] = [];
+
+  let remaining = text;
+  let inCodeBlock = false;
+  while (remaining.length > MAX) {
+    let cut = remaining.lastIndexOf("\n\n", MAX);
+    if (cut < MAX * 0.5) cut = remaining.lastIndexOf("\n", MAX);
+    if (cut < MAX * 0.5) cut = remaining.lastIndexOf(". ", MAX);
+    if (cut < MAX * 0.5) cut = MAX;
+
+    let piece = remaining.slice(0, cut);
+    // Track code-block state and re-fence across the split if needed.
+    const fences = (piece.match(/```/g) || []).length;
+    if (fences % 2 === 1) inCodeBlock = !inCodeBlock;
+    if (inCodeBlock) piece += "\n```";
+    chunks.push(piece);
+
+    remaining = remaining.slice(cut).replace(/^\n+/, "");
+    if (inCodeBlock) {
+      // Reopen the fence on the next chunk; we don't know the language so
+      // use plain ``` (renders fine).
+      remaining = "```\n" + remaining;
+    }
+  }
+  chunks.push(remaining);
+
+  // First chunk uses msg.reply (quote); subsequent chunks are channel sends
+  // so we don't blow up the reply UI. Files only on the last chunk.
+  const channel = msg.channel;
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const opts = {
+      content: chunks[i],
+      ...(isLast && files && files.length ? { files } : {}),
+    };
+    try {
+      if (i === 0) {
+        await msg.reply(opts);
+      } else if ("send" in channel) {
+        await channel.send(opts);
+      }
+    } catch (err) {
+      console.error(`[reply-chunked] chunk ${i + 1}/${chunks.length} failed:`, err);
+    }
+  }
 }
 
 /**
