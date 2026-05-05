@@ -50,10 +50,14 @@ export class ClaudeCodeBackend implements AgentBackend {
   async respond(userText: string): Promise<AgentReply> {
     if (!this.sessionId) throw new Error("ClaudeCodeBackend: start() not called");
 
-    // Speaker tools: read-only built-ins for inline lookups + MCP tools for
-    // delegating real work to extensions. No Bash/Edit/Write — those run
-    // inside extensions, never on the speaker's hot path.
-    const baseTools = process.env.SPEAKER_TOOLS ?? "Read Glob Grep";
+    // Speaker tools: in voice mode, read-only built-ins for inline lookups +
+    // MCP tools for delegating real work. No Bash/Edit/Write — those run
+    // inside extensions, never on the voice hot path.
+    // In text mode (vibecoding), full Claude Code toolset by default — the
+    // agent IS doing real work and needs Write/Edit/Bash. Override either
+    // via SPEAKER_TOOLS env.
+    const defaultBase = this.opts.mode === "text" ? "default" : "Read Glob Grep";
+    const baseTools = process.env.SPEAKER_TOOLS ?? defaultBase;
     const mcpUrl = process.env.PAPERCUP_MCP_URL;
     const papercupTools = mcpUrl
       ? "mcp__papercup__spawn_extension mcp__papercup__check_extension mcp__papercup__list_extensions"

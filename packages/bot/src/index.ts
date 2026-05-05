@@ -27,6 +27,8 @@ import {
 import prism from "prism-media";
 import { Readable } from "node:stream";
 import { spawn } from "node:child_process";
+import path from "node:path";
+import { promises as fsp } from "node:fs";
 import { SileroVad } from "@papercup/voice-stack/vad";
 import { WhisperSidecar } from "@papercup/voice-stack/stt";
 import { createTts, type TtsEngine } from "@papercup/voice-stack/tts";
@@ -1015,34 +1017,53 @@ async function handleMessage(msg: Message): Promise<void> {
   //   mention   — fallback. Listen anywhere, but only when @-mentioned.
   const guildBound = guildConfig.get(msg.guild.id).boundTextChannelId ?? boundTextChannelId;
   let userText: string;
+  const hasAttachments = msg.attachments.size > 0;
   if (guildBound) {
     if (msg.channelId !== guildBound) return;
     userText = msg.content.trim();
-    if (userText.length === 0) return;
+    // Attachments-only messages are valid — no early return on empty text.
+    if (userText.length === 0 && !hasAttachments) return;
   } else {
     if (!msg.mentions.users.has(me.id)) return;
     userText = msg.content.replace(new RegExp(`<@!?${me.id}>`, "g"), "").trim();
-    if (userText.length === 0) return;
+    if (userText.length === 0 && !hasAttachments) return;
   }
 
-  console.log(`[text] from ${msg.author.tag} in #${"name" in (msg.channel as TextBasedChannel) ? (msg.channel as { name: string }).name : msg.channelId}: "${userText}"`);
+  // Pull attachments into the per-channel inbox + augment userText with paths
+  // so the agent can Read them. Also prepare a per-turn outbox the agent
+  // can Write to — files there are attached to our reply.
+  let outboxDir: string | undefined;
+  try {
+    const augment = await ingestAttachments(msg);
+    const ob = await prepareOutbox(msg);
+    outboxDir = ob.dir;
+    const combined = [augment, ob.hint].filter(Boolean).join("\n\n");
+    if (combined) {
+      userText = userText ? `${userText}\n\n${combined}` : combined;
+    }
+  } catch (err) {
+    console.error(`[file-io] failed to set up turn IO:`, err);
+  }
+
+  console.log(`[text] from ${msg.author.tag} in #${"name" in (msg.channel as TextBasedChannel) ? (msg.channel as { name: string }).name : msg.channelId}: "${userText.slice(0, 80)}${userText.length > 80 ? "…" : ""}"`);
 
   // Route: if this guild has an active voice line, append to that session and
   // also speak the reply. Otherwise spin up (or reuse) a text-only chat keyed
   // by channel.
   const activeLine = lines.get(msg.guild.id);
   if (activeLine) {
-    await handleTextIntoActiveLine(msg, activeLine, userText);
+    await handleTextIntoActiveLine(msg, activeLine, userText, outboxDir);
     return;
   }
 
-  await handleTextOnlyChat(msg, userText);
+  await handleTextOnlyChat(msg, userText, outboxDir);
 }
 
 async function handleTextIntoActiveLine(
   msg: Message,
   state: LineState,
   userText: string,
+  outboxDir?: string,
 ): Promise<void> {
   // Heartbeat typing — keep "Papercup is typing…" visible for the whole turn.
   // Discord's typing expires after ~10s, so we ping every 8s while waiting.
@@ -1067,8 +1088,13 @@ async function handleTextIntoActiveLine(
   console.log(`[text→line] reply (${reply.elapsedMs}ms): "${replyText}"`);
   await sessions.touch(state.session.id);
 
-  // Reply in chat for the visible record.
-  await msg.reply(replyText.length > 1900 ? replyText.slice(0, 1897) + "…" : replyText);
+  // Reply in chat for the visible record. Attach any files the agent
+  // wrote to the outbox (capped at Discord's 10-file / 25MB-each limits).
+  const files = outboxDir ? await scanOutbox(outboxDir) : [];
+  await msg.reply({
+    content: replyText.length > 1900 ? replyText.slice(0, 1897) + "…" : replyText,
+    ...(files.length ? { files } : {}),
+  });
 
   // Also speak it on the active voice line.
   if (reply.text) {
@@ -1084,7 +1110,7 @@ async function handleTextIntoActiveLine(
   void renderStatus(state, `💬 (chat) "${userText}" → "${replyText}" (${Date.now() - tStart}ms)`, true);
 }
 
-async function handleTextOnlyChat(msg: Message, userText: string): Promise<void> {
+async function handleTextOnlyChat(msg: Message, userText: string, outboxDir?: string): Promise<void> {
   const stopHeartbeat = beginTypingHeartbeat(msg.channel);
 
   let chat = textChats.get(msg.channelId);
@@ -1126,7 +1152,11 @@ async function handleTextOnlyChat(msg: Message, userText: string): Promise<void>
   await sessions.touch(chat.session.id);
 
   const replyText = reply.text || "(empty)";
-  await msg.reply(replyText.length > 1900 ? replyText.slice(0, 1897) + "…" : replyText);
+  const files = outboxDir ? await scanOutbox(outboxDir) : [];
+  await msg.reply({
+    content: replyText.length > 1900 ? replyText.slice(0, 1897) + "…" : replyText,
+    ...(files.length ? { files } : {}),
+  });
 }
 
 async function handleSay(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1364,6 +1394,96 @@ function beginTypingHeartbeat(channel: TextBasedChannel): () => void {
   tick();
   const interval = setInterval(tick, 8_000);
   return () => clearInterval(interval);
+}
+
+/**
+ * Download Discord attachments to data/inbox/<channel>/<msg-id>/ and return
+ * a markdown-style augmentation to append to the user's text so the agent
+ * knows what was attached and where to find it.
+ *
+ * Skips files larger than 25MB (Discord's effective per-message ceiling for
+ * the bot's reply path; if Discord delivered it, we can fetch it). Fails
+ * soft — single attachment failure doesn't block the rest.
+ */
+async function ingestAttachments(msg: Message): Promise<string> {
+  if (msg.attachments.size === 0) return "";
+  const inboxRoot = path.join(process.cwd(), "data", "inbox", msg.channelId, msg.id);
+  await fsp.mkdir(inboxRoot, { recursive: true });
+
+  const lines: string[] = [];
+  for (const att of msg.attachments.values()) {
+    const safeName = att.name?.replace(/[^a-zA-Z0-9._-]/g, "_") || "attachment";
+    const localPath = path.join(inboxRoot, safeName);
+    try {
+      const res = await fetch(att.url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      await fsp.writeFile(localPath, buf);
+      const ct = att.contentType ?? "application/octet-stream";
+      const isImage = ct.startsWith("image/");
+      lines.push(
+        `📎 ${isImage ? "image" : "file"} attached: \`${safeName}\` ` +
+        `(${ct}, ${buf.length} bytes) — saved at \`${localPath}\``,
+      );
+    } catch (err) {
+      console.error(`[inbox] failed ${att.name}:`, err);
+    }
+  }
+  if (lines.length === 0) return "";
+
+  // Wrapper tells the agent how to use the paths. Claude-code's Read tool
+  // handles images natively for vision-capable models (Opus/Sonnet) — same
+  // path works for both code and images.
+  return [
+    "[Files attached to this message. Use Read on each path below — for images, ",
+    " Read returns vision input automatically when the model supports it:]",
+    ...lines,
+  ].join("\n");
+}
+
+/**
+ * Reserve a per-turn outbox directory the agent can write files to. After
+ * respond(), scanOutbox() picks up anything new and the bot attaches it to
+ * the reply. Returns the dir + a hint string to append to the user prompt.
+ */
+async function prepareOutbox(msg: Message): Promise<{ dir: string; hint: string }> {
+  const dir = path.join(process.cwd(), "data", "outbox", msg.channelId, msg.id);
+  await fsp.mkdir(dir, { recursive: true });
+  const hint =
+    `[Outbox: any files you Write to \`${dir}\` will be attached to my reply ` +
+    `(max 10 files, 25MB each). Use this for charts, generated code, screenshots, etc. ` +
+    `Don't mention the outbox path in your reply text — just write the file.]`;
+  return { dir, hint };
+}
+
+/**
+ * Scan the outbox dir for files the agent created. Returns absolute paths
+ * suitable for Discord's `files: [...]` reply option. Caps at 10 files
+ * (Discord limit) and skips files >24MB (slightly under the 25MB ceiling
+ * for safety on non-boosted servers).
+ */
+async function scanOutbox(dir: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const e of entries) {
+    if (!e.isFile()) continue;
+    const p = path.join(dir, e.name);
+    try {
+      const stat = await fsp.stat(p);
+      if (stat.size > 24 * 1024 * 1024) {
+        console.warn(`[outbox] skipping ${e.name}: ${stat.size} bytes (>24MB)`);
+        continue;
+      }
+      out.push(p);
+      if (out.length >= 10) break;
+    } catch { /* file disappeared between readdir and stat */ }
+  }
+  return out;
 }
 
 /**

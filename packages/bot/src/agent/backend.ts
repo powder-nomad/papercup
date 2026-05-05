@@ -55,6 +55,14 @@ export type AgentBackendOpts = {
    * Expanded to `mcp__<name>__*` in --allowedTools. Other backends ignore.
    */
   allowedMcps?: string[];
+  /**
+   * Drives the default toolset in claude-code:
+   * - "voice" → "Read Glob Grep" (lean; speaker delegates to extensions)
+   * - "text"  → "default" (full Claude Code toolset; vibecoding flow needs
+   *             Write/Edit/Bash to do real work itself)
+   * Override either via SPEAKER_TOOLS env.
+   */
+  mode?: "voice" | "text";
 };
 
 export interface AgentBackend {

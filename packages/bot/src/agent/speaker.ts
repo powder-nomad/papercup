@@ -106,6 +106,7 @@ export class SpeakerAgent {
       effort: opts.effort,
       permissionMode,
       allowedMcps: opts.allowedMcps,
+      mode,
     });
     this.started = true;
   }
