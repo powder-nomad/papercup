@@ -195,6 +195,8 @@ client.on("interactionCreate", async (interaction) => {
       await handleNew(interaction);
     } else if (interaction.commandName === "cancel") {
       await handleCancel(interaction);
+    } else if (interaction.commandName === "status") {
+      await handleStatus(interaction);
     } else if (interaction.commandName === "model") {
       await handleModel(interaction);
     } else if (interaction.commandName === "effort") {
@@ -577,6 +579,54 @@ async function handleCancel(interaction: ChatInputCommandInteraction): Promise<v
   } else {
     await interaction.editReply(`Nothing in flight to cancel.`);
   }
+}
+
+async function handleStatus(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const active = findActiveContainer(interaction);
+  const lines: string[] = [];
+
+  if (active) {
+    const session = active.kind === "voice" ? active.state.session : active.chat.session;
+    lines.push(`📍 **Active session: \`${session.name}\`** (${active.kind})`);
+    lines.push(`Mode: \`${session.mode ?? "voice"}\``);
+    if (session.model) lines.push(`Model: \`${session.model}\``);
+    else lines.push(`Model: \`${process.env.AGENT_MODEL ?? "(env default)"}\``);
+    if (session.effort) lines.push(`Effort: \`${session.effort}\``);
+    if (session.permissionMode) {
+      lines.push(`Permissions: \`${session.permissionMode}\``);
+    } else {
+      const def = active.kind === "text" ? "bypassPermissions (text default)" : "default (voice default)";
+      lines.push(`Permissions: \`${def}\``);
+    }
+    if (session.allowedMcps?.length) {
+      lines.push(`MCPs: ${session.allowedMcps.map((n) => `\`${n}\``).join(", ")}`);
+    }
+    lines.push(`Extension-completion notify: ${session.notify ? "🔔 on" : "🔕 off"}`);
+  } else {
+    lines.push(`📭 No active session in this guild/channel. \`/pickup\` to start one.`);
+  }
+
+  // Currently-running extensions across the bot — useful regardless of
+  // whether this guild/channel has an active session.
+  const running = extensions.list().filter((e) => e.status === "running");
+  lines.push("");
+  if (running.length === 0) {
+    lines.push(`🟢 No background extensions running.`);
+  } else {
+    lines.push(`🟡 **${running.length} extension${running.length === 1 ? "" : "s"} running:**`);
+    for (const ext of running.slice(0, 10)) {
+      const ageSec = Math.floor((Date.now() - ext.startedAt) / 1000);
+      const ageMin = Math.floor(ageSec / 60);
+      const human = ageMin >= 1 ? `${ageMin}m${ageSec % 60}s` : `${ageSec}s`;
+      const taskPreview = ext.task.length > 70 ? ext.task.slice(0, 67) + "…" : ext.task;
+      lines.push(`• \`${ext.name}\` (${human}) — "${taskPreview}"`);
+    }
+    if (running.length > 10) lines.push(`… and ${running.length - 10} more`);
+  }
+
+  await interaction.editReply(lines.join("\n"));
 }
 
 async function handleSessions(interaction: ChatInputCommandInteraction): Promise<void> {

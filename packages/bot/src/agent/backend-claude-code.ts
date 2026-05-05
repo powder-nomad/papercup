@@ -103,6 +103,16 @@ export class ClaudeCodeBackend implements AgentBackend {
       args.push("--resume", this.sessionId);
     }
 
+    // Log the knobs we're actually passing so it's visible in bot.log
+    // whether per-session model/effort/permission-mode/mcps landed correctly.
+    console.log(
+      `[agent:claude-code] respond model=${this.opts.model ?? "(default)"} ` +
+      `effort=${this.opts.effort ?? "(default)"} ` +
+      `permission-mode=${this.opts.permissionMode ?? "(default)"} ` +
+      `mcps=[${(this.opts.allowedMcps ?? []).join(",")}] ` +
+      `${this.firstTurn ? "first-turn" : "resume"}`,
+    );
+
     const t0 = Date.now();
     const proc = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp" });
     this.inFlight = proc;

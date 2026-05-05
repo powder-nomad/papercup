@@ -74,6 +74,10 @@ const commands = [
     .setDescription("Abort the in-flight agent turn for the active session")
     .toJSON(),
   new SlashCommandBuilder()
+    .setName("status")
+    .setDescription("Show the active session's config + currently-running extensions")
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName("new")
     .setDescription("Start a fresh session in the active container, inheriting model/effort/permissions")
     .addStringOption((o) =>
