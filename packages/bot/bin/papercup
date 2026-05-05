@@ -53,8 +53,14 @@ start() {
   if use_systemd; then
     # Transient user-level service. --collect drops the unit on exit so we
     # don't accumulate failed-state stubs across crashes.
+    # systemd's user manager has a minimal default PATH (no `~/.local/bin`,
+    # no nvm shims) so the bot's `spawn('claude')` would ENOENT under it.
+    # Forward the caller's interactive PATH so the daemon resolves binaries
+    # the same way an interactive shell does.
     systemd-run --user --quiet --collect --unit="$UNIT_NAME" \
       --working-directory="$ROOT" \
+      --setenv="PATH=$PATH" \
+      --setenv="HOME=$HOME" \
       --property=StandardOutput="append:$LOG_FILE" \
       --property=StandardError="append:$LOG_FILE" \
       --property=Restart=on-failure \
