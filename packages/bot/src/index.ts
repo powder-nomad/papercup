@@ -9,6 +9,8 @@ import {
   TextBasedChannel,
   PermissionFlagsBits,
   ChannelType,
+  ButtonInteraction,
+  ModalSubmitInteraction,
 } from "discord.js";
 import {
   joinVoiceChannel,
@@ -41,6 +43,16 @@ import { ExtensionMcpServer } from "@papercup/voice-stack/extensions/mcp";
 import { SpeakerAgent } from "./agent/speaker.js";
 import { SessionStore, type Session } from "./session/store.js";
 import { GuildConfigStore } from "./config/guild-config.js";
+import { DiscordQuestionDispatcher } from "./plan-mode/dispatcher.js";
+import { processRegistry } from "./agent/process-registry.js";
+import { ProgressRenderer, type StreamingMode } from "./streaming/progress.js";
+import * as modelCatalog from "./agent/model-catalog.js";
+import { listBackends } from "./agent/backend.js";
+import type { SessionReactivity } from "./session/store.js";
+import { budget, richPresenceText } from "./agent/budget.js";
+import { botIdentity } from "./agent/bot-identity.js";
+import * as roster from "./agent/roster.js";
+import { ActivityType } from "discord.js";
 
 const token = required("DISCORD_TOKEN");
 const silenceMs = Number(process.env.SILENCE_MS ?? 600);
@@ -74,7 +86,87 @@ const tts: TtsEngine = createTts(process.env.TTS_ENGINE ?? "kokoro");
 const sessions = new SessionStore();
 const guildConfig = new GuildConfigStore();
 const extensions = new ExtensionManager();
-const extMcp = new ExtensionMcpServer(extensions);
+
+// Plan-mode interactive question dispatcher state. Constructed after the
+// Discord client is created (further down). `currentPlanContext` is set
+// right before agent.respond() in plan mode and cleared after; the MCP
+// `present_options` tool reads it to know which channel/user to post to.
+// MVP: single-user assumption — one in-flight plan-mode turn at a time.
+let currentPlanContext: { channelId: string; ownerUserId: string } | undefined;
+let questionDispatcher: DiscordQuestionDispatcher;
+let extMcp: ExtensionMcpServer;
+
+// Track 2 Phase 1: bot-to-bot loop guard. Counts papercup's consecutive
+// replies in a channel since the last human message; reset when a human
+// speaks. When ≥ MAX_BOT_TURNS, papercup ignores further bot messages until
+// a human resets the counter.
+const MAX_BOT_TURNS = Number(process.env.BOT_BOT_MAX_TURNS ?? 3);
+const botReplyCount = new Map<string, number>();
+
+// Channels where we've already announced "📍 Session X (new|resumed) …" in
+// this bot's lifetime. Resets on restart so the indicator fires once per
+// channel per process.
+const firstTurnAnnounced = new Set<string>();
+
+/**
+ * Post a single "📍 Session X (new|resumed) …" line in the message's channel.
+ * Caller is responsible for the once-per-channel-per-bot-lifetime gating via
+ * `firstTurnAnnounced`. Best-effort: errors get swallowed so a Discord
+ * permission gap doesn't break the turn.
+ */
+async function postSessionIndicator(
+  msg: Message,
+  session: Session,
+  agent: SpeakerAgent,
+  kind: "new" | "resumed",
+): Promise<void> {
+  if (!("send" in msg.channel)) return;
+  const icon = kind === "resumed" ? "♻️" : "✨";
+  const verb = kind === "resumed" ? "resumed" : "new";
+  const backend = agent.getBackendName();
+  const parts = [`${icon} Session \`${session.name}\` ${verb} · backend=\`${backend}\``];
+  if (session.model) parts.push(`model=\`${session.model}\``);
+  if (kind === "resumed") parts.push(`last used ${humanAgo(session.lastActiveAt)}`);
+  try {
+    await (msg.channel as { send: (s: string) => Promise<{ id: string }> }).send(parts.join(" · "));
+  } catch (err) {
+    console.warn(`[session-indicator] post failed: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Look up the reactivity setting for whatever session is active in the given
+ * message's guild/channel. Defaults to "strict" when no session is bound yet.
+ */
+function getSessionReactivity(msg: Message): SessionReactivity {
+  if (msg.guild) {
+    const line = lines.get(msg.guild.id);
+    if (line?.session.reactivity) return line.session.reactivity;
+  }
+  const chat = textChats.get(msg.channelId);
+  if (chat?.session.reactivity) return chat.session.reactivity;
+  return "strict";
+}
+
+async function withPlanContext<T>(
+  session: Session,
+  channelId: string,
+  ownerUserId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (session.permissionMode !== "plan") return fn();
+  if (currentPlanContext) {
+    console.warn(
+      "[plan-mode] another plan-mode turn is in flight; new context overwrites the previous (single-user MVP)",
+    );
+  }
+  currentPlanContext = { channelId, ownerUserId };
+  try {
+    return await fn();
+  } finally {
+    currentPlanContext = undefined;
+  }
+}
 
 function required(key: string): string {
   const v = process.env[key];
@@ -121,9 +213,47 @@ const client = new Client({
   ],
 });
 
-client.once("clientReady", (c) => {
+questionDispatcher = new DiscordQuestionDispatcher(client);
+extMcp = new ExtensionMcpServer(
+  extensions,
+  questionDispatcher,
+  () => currentPlanContext,
+);
+
+client.once("clientReady", async (c) => {
   console.log(`Cup ready as ${c.user.tag}. Waiting for /pickup.`);
+  // Track 2 Phase 2: rich-presence broadcast of budget %.
+  refreshRichPresence();
+  // Track 2 Phase 3: scrape #roster channel + workdir-overlap check (best-effort).
+  const rosterChannelId = process.env.BOT_ROSTER_CHANNEL_ID?.trim();
+  if (rosterChannelId) {
+    try {
+      const result = await roster.scrapeChannel(client, rosterChannelId);
+      console.log(
+        `[roster] scrape scanned=${result.scanned} parsed=${result.parsed} new=${result.newOrUpdated}; roster=${roster.list().length}`,
+      );
+      const ourWorkdir = process.env.BOT_WORKDIR ?? process.cwd();
+      const warnings = roster.checkWorkdirOverlap(c.user.id, ourWorkdir);
+      for (const w of warnings) {
+        console.warn(
+          `[roster] WORKDIR OVERLAP (${w.reason}): ours=${w.ourWorkdir} vs bot=${w.otherBotId} theirs=${w.otherWorkdir}`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[roster] boot scrape failed: ${(err as Error).message}`);
+    }
+  } else {
+    console.log("[roster] BOT_ROSTER_CHANNEL_ID not set — skipping boot scrape");
+  }
 });
+
+function refreshRichPresence(): void {
+  try {
+    client.user?.setActivity({ name: richPresenceText(), type: ActivityType.Custom });
+  } catch (err) {
+    console.warn(`[presence] update failed: ${(err as Error).message}`);
+  }
+}
 
 await vad.load();
 console.log("[vad] silero loaded");
@@ -146,6 +276,42 @@ if (boundTextChannelId) {
 await extensions.load();
 console.log(`[extensions] loaded ${extensions.list().length} record(s)`);
 
+await processRegistry.load();
+console.log(`[process-registry] loaded ${processRegistry.list().length} record(s)`);
+
+await modelCatalog.loadCache();
+console.log(
+  `[model-catalog] loaded ${modelCatalog.list().length} model(s)` +
+  (modelCatalog.isCacheFresh() ? ` (cache fresh)` : ` (cache stale or empty — use /models refresh)`),
+);
+
+await budget.load();
+console.log(
+  `[budget] loaded — daily cap ${budget.getBudgetUsd() > 0 ? `$${budget.getBudgetUsd()}` : "unlimited"}; today $${budget.getToday().costUsd.toFixed(4)}`,
+);
+
+await botIdentity.loadOrGenerate();
+console.log(`[bot-identity] fingerprint ${botIdentity.getFingerprint()}`);
+
+await roster.loadCache();
+console.log(`[roster] cache has ${roster.list().length} entry(ies)`);
+const reaped = await processRegistry.reapOrphans(process.pid);
+if (reaped.killed.length) {
+  console.log(
+    `[process-registry] reaped ${reaped.killed.length} orphan(s) from a previous bot: ${reaped.killed.join(",")}`,
+  );
+}
+if (reaped.alreadyDead.length) {
+  console.log(
+    `[process-registry] cleared ${reaped.alreadyDead.length} dead entry(ies): ${reaped.alreadyDead.join(",")}`,
+  );
+}
+if (reaped.skipped.length) {
+  for (const s of reaped.skipped) {
+    console.warn(`[process-registry] skipped pid=${s.pid}: ${s.reason}`);
+  }
+}
+
 extensions.on("settled", (ext) => {
   // Voice lines: speak a one-line completion notice if /notify is on.
   for (const [, state] of lines) {
@@ -164,6 +330,32 @@ process.env.PAPERCUP_MCP_URL = mcpInfo.url;
 console.log(`[mcp] tools available at ${mcpInfo.url}`);
 
 client.on("interactionCreate", async (interaction) => {
+  // Plan-mode interactive question: route button clicks and modal submits to
+  // the dispatcher before the chat-command path. Owner-id check is enforced
+  // inside the dispatcher (per-pending-question), so we keep allowlist gating
+  // here too as a coarse outer fence.
+  if (interaction.isButton() || interaction.isModalSubmit()) {
+    if (!isAllowed(interaction.user.id)) {
+      try {
+        await interaction.reply({
+          content: "Not on the allowlist.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch { /* ignore */ }
+      return;
+    }
+    try {
+      if (interaction.isButton()) {
+        await questionDispatcher.handleButton(interaction as ButtonInteraction);
+      } else {
+        await questionDispatcher.handleModal(interaction as ModalSubmitInteraction);
+      }
+    } catch (err) {
+      console.error("[plan-mode] interaction handler error:", err);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   if (!isAllowed(interaction.user.id)) {
@@ -210,6 +402,20 @@ client.on("interactionCreate", async (interaction) => {
       await handleMcp(interaction);
     } else if (interaction.commandName === "notify") {
       await handleNotify(interaction);
+    } else if (interaction.commandName === "streaming") {
+      await handleStreaming(interaction);
+    } else if (interaction.commandName === "backend") {
+      await handleBackend(interaction);
+    } else if (interaction.commandName === "models") {
+      await handleModels(interaction);
+    } else if (interaction.commandName === "reactivity") {
+      await handleReactivity(interaction);
+    } else if (interaction.commandName === "budget") {
+      await handleBudget(interaction);
+    } else if (interaction.commandName === "announce") {
+      await handleAnnounce(interaction);
+    } else if (interaction.commandName === "refresh-roster") {
+      await handleRefreshRoster(interaction);
     }
   } catch (err) {
     console.error(`handler error on /${interaction.commandName}:`, err);
@@ -284,6 +490,7 @@ async function startTextSession(
     permissionMode: session.permissionMode,
     allowedMcps: session.allowedMcps,
     mode: "text",
+    backendName: session.backend,
   });
   textChats.set(interaction.channelId, { session, agent });
   await sessions.touch(session.id);
@@ -420,6 +627,7 @@ async function joinAndStart(
     permissionMode: session.permissionMode,
     allowedMcps: session.allowedMcps,
     mode: "voice",
+    backendName: session.backend,
   });
   await sessions.touch(session.id);
 
@@ -529,6 +737,7 @@ async function handleNew(interaction: ChatInputCommandInteraction): Promise<void
       permissionMode: fresh.permissionMode,
       allowedMcps: fresh.allowedMcps,
       mode: "voice",
+      backendName: fresh.backend,
     });
     voice.session = fresh;
     await sessions.touch(fresh.id);
@@ -551,6 +760,7 @@ async function handleNew(interaction: ChatInputCommandInteraction): Promise<void
       permissionMode: fresh.permissionMode,
       allowedMcps: fresh.allowedMcps,
       mode: "text",
+      backendName: fresh.backend,
     });
     textChats.set(channelId, { session: fresh, agent });
     await sessions.touch(fresh.id);
@@ -762,8 +972,9 @@ async function hotSwapAgent(active: ActiveContainer, session: Session): Promise<
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,
-    allowedMcps: session.allowedMcps,
+      allowedMcps: session.allowedMcps,
       mode: "voice",
+      backendName: session.backend,
     });
     await syncBackendId(active.state);
   } else {
@@ -776,7 +987,8 @@ async function hotSwapAgent(active: ActiveContainer, session: Session): Promise<
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,
-    allowedMcps: session.allowedMcps,
+      allowedMcps: session.allowedMcps,
+      backendName: session.backend,
       mode: "text",
     });
   }
@@ -983,6 +1195,252 @@ async function handleNotify(interaction: ChatInputCommandInteraction): Promise<v
   void refreshSessionPinFor(active, session);
 }
 
+async function handleStreaming(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session. /pickup first, then /streaming.");
+    return;
+  }
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
+  const mode = interaction.options.getString("mode") as StreamingMode | null;
+  if (!mode) {
+    const current = session.streaming ?? "off";
+    await interaction.editReply(
+      `Streaming for "${session.name}": \`${current}\`. ` +
+      `Use \`/streaming mode: <off|summary|full>\` to change.`,
+    );
+    return;
+  }
+  const updated = await sessions.setStreaming(session.id, mode);
+  if (!updated) {
+    await interaction.editReply("Couldn't update session — record missing.");
+    return;
+  }
+  Object.assign(session, updated);
+  await interaction.editReply(
+    mode === "off"
+      ? `🔕 Live progress OFF for "${session.name}". Final reply only.`
+      : `📡 Live progress \`${mode}\` for "${session.name}". Threshold 5s · throttled edits.`,
+  );
+}
+
+async function handleBackend(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session. /pickup first, then /backend.");
+    return;
+  }
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
+  const agent = active.kind === "voice" ? active.state.agent : active.chat.agent;
+  const requested = interaction.options.getString("name");
+
+  if (!requested) {
+    const current = agent.getBackendName();
+    await interaction.editReply(
+      `Backend for "${session.name}": \`${current}\`\n` +
+      `Available: ${listBackends().map((b) => `\`${b}\``).join(", ")}\n` +
+      `Use \`/backend name:<one of the above>\` to switch. ` +
+      `Note: switching resets the conversation history (cross-backend resume isn't possible).`,
+    );
+    return;
+  }
+
+  if (!listBackends().includes(requested)) {
+    await interaction.editReply(`Unknown backend: \`${requested}\`. Available: ${listBackends().join(", ")}`);
+    return;
+  }
+
+  if (requested === agent.getBackendName()) {
+    await interaction.editReply(`Already on \`${requested}\`. No change.`);
+    return;
+  }
+
+  try {
+    await agent.swapBackend(requested, {
+      sessionId: session.id,
+      resume: false, // fresh start on new backend
+      model: session.model,
+      effort: session.effort,
+      permissionMode: session.permissionMode,
+      allowedMcps: session.allowedMcps,
+      mode: session.mode ?? "text",
+    });
+  } catch (err) {
+    await interaction.editReply(`Failed to switch to \`${requested}\`: ${(err as Error).message}`);
+    return;
+  }
+
+  await sessions.setBackend(session.id, requested);
+  Object.assign(session, { backend: requested });
+
+  await interaction.editReply(
+    `🔁 Switched "${session.name}" → \`${requested}\`. ` +
+    `Conversation history reset (cross-backend resume isn't supported).`,
+  );
+}
+
+async function handleModels(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const action = interaction.options.getString("action") ?? "list";
+
+  if (action === "refresh") {
+    await interaction.editReply("🔄 Re-fetching model lists from configured providers…");
+    const status = await modelCatalog.refreshLiveCatalog();
+    const lines: string[] = ["**Refresh result:**"];
+    for (const [provider, s] of Object.entries(status)) {
+      lines.push(s.ok
+        ? `✅ \`${provider}\`: ${s.count} model(s)`
+        : `❌ \`${provider}\`: ${s.error}`);
+    }
+    lines.push("", `Total in catalog now: ${modelCatalog.list().length}`);
+    await interaction.editReply(lines.join("\n"));
+    return;
+  }
+
+  // action === "list"
+  const byProvider = modelCatalog.listByProvider();
+  const providers = Object.keys(byProvider).sort();
+  const lines: string[] = [`**Known models** (${modelCatalog.list().length}; cache ${modelCatalog.isCacheFresh() ? "fresh" : "stale/empty"})`];
+  for (const p of providers) {
+    const arr = byProvider[p]!.slice(0, 15);
+    lines.push(`\n__${p}__`);
+    for (const m of arr) {
+      lines.push(`• \`${m.id}\` → ${m.backends.map((b) => `\`${b}\``).join(", ")}${m.notes ? ` _(${m.notes})_` : ""}`);
+    }
+    if (byProvider[p]!.length > 15) lines.push(`  …and ${byProvider[p]!.length - 15} more`);
+  }
+  const body = lines.join("\n").slice(0, 1900); // Discord 2000-char cap
+  await interaction.editReply(body);
+}
+
+async function handleReactivity(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const active = findActiveContainer(interaction);
+  if (!active) {
+    await interaction.editReply("No active session. /pickup first, then /reactivity.");
+    return;
+  }
+  const session = active.kind === "voice" ? active.state.session : active.chat.session;
+  const mode = interaction.options.getString("mode") as SessionReactivity | null;
+  if (!mode) {
+    const current = session.reactivity ?? "strict";
+    const channelCount = botReplyCount.get(interaction.channelId ?? "") ?? 0;
+    await interaction.editReply(
+      `Reactivity for "${session.name}": \`${current}\`.\n` +
+      `Bot-loop cap: ${MAX_BOT_TURNS} consecutive papercup replies before requiring a human turn.\n` +
+      `This channel's counter: ${channelCount}/${MAX_BOT_TURNS}.`,
+    );
+    return;
+  }
+  const updated = await sessions.setReactivity(session.id, mode);
+  if (!updated) {
+    await interaction.editReply("Couldn't update session — record missing.");
+    return;
+  }
+  Object.assign(session, updated);
+  const explain =
+    mode === "strict" ? "ignore other bots unless they @-mention me"
+      : mode === "loose"  ? "respond to other bots without @-mention"
+      : "reserved — behaves like loose today";
+  await interaction.editReply(`🤖 Reactivity for "${session.name}" → \`${mode}\` (${explain}).`);
+}
+
+async function handleBudget(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const newCap = interaction.options.getNumber("set_usd");
+  if (newCap !== null) {
+    await budget.setBudgetUsd(newCap);
+    refreshRichPresence();
+    await interaction.editReply(
+      newCap > 0
+        ? `💰 Daily budget set to **$${newCap.toFixed(2)}**.`
+        : `💰 Daily budget cap **disabled** (unlimited).`,
+    );
+    return;
+  }
+  const today = budget.getToday();
+  const pct = budget.getTodayPercent();
+  const recent = budget.getRecent(7);
+  const recentLines = recent
+    .slice()
+    .reverse()
+    .map((u) => `  ${u.date}: ${u.inputTokens + u.outputTokens} tok · $${u.costUsd.toFixed(4)}`)
+    .join("\n");
+  const cap = budget.getBudgetUsd();
+  await interaction.editReply(
+    `**Budget**\n` +
+    `Today (${today.date}): ${today.inputTokens + today.outputTokens} tok · **$${today.costUsd.toFixed(4)}**${cap > 0 ? ` · ${pct.toFixed(1)}% of $${cap.toFixed(2)}` : ` (no cap)`}\n` +
+    (recent.length > 1 ? `\nLast 7 days:\n${recentLines}` : ""),
+  );
+}
+
+async function handleAnnounce(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const rosterChannelId = process.env.BOT_ROSTER_CHANNEL_ID?.trim();
+  if (!rosterChannelId) {
+    await interaction.editReply(
+      "BOT_ROSTER_CHANNEL_ID not set. Pick a `#roster` channel by Discord-channel-id convention and set the env var, then restart.",
+    );
+    return;
+  }
+  const me = client.user;
+  if (!me) {
+    await interaction.editReply("Bot user not ready.");
+    return;
+  }
+  const channel = await client.channels.fetch(rosterChannelId).catch(() => null);
+  if (!channel || !("send" in channel) || !channel.isTextBased()) {
+    await interaction.editReply(`Couldn't access roster channel ${rosterChannelId}.`);
+    return;
+  }
+  const ownerId = process.env.BOT_OWNER_DISCORD_ID?.trim();
+  const content = roster.buildAnnouncement({
+    botId: me.id,
+    owner: ownerId ? `<@${ownerId}>` : "(unset; set BOT_OWNER_DISCORD_ID)",
+    workdir: process.env.BOT_WORKDIR ?? process.cwd(),
+    reactivity: process.env.BOT_DEFAULT_REACTIVITY ?? "strict",
+    budget: budget.getBudgetUsd() > 0 ? `$${budget.getBudgetUsd().toFixed(2)}/day` : "unset",
+    publicKey: botIdentity.getPublicKeyBase64() || "(unavailable)",
+    fingerprint: botIdentity.getFingerprint(),
+  });
+  try {
+    await (channel as { send: (s: string) => Promise<{ id: string }> }).send(content);
+  } catch (err) {
+    await interaction.editReply(`Announce failed: ${(err as Error).message}`);
+    return;
+  }
+  await interaction.editReply(
+    `📣 Announced in <#${rosterChannelId}>. Fingerprint \`${botIdentity.getFingerprint()}\`.`,
+  );
+}
+
+async function handleRefreshRoster(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const rosterChannelId = process.env.BOT_ROSTER_CHANNEL_ID?.trim();
+  if (!rosterChannelId) {
+    await interaction.editReply("BOT_ROSTER_CHANNEL_ID not set.");
+    return;
+  }
+  try {
+    const result = await roster.scrapeChannel(client, rosterChannelId);
+    const me = client.user;
+    const warnings = me ? roster.checkWorkdirOverlap(me.id, process.env.BOT_WORKDIR ?? process.cwd()) : [];
+    const lines = roster.list().map((e) =>
+      `• \`${e.botId}\` (${e.owner}) — workdir=\`${e.workdir}\`, reactivity=\`${e.reactivity}\`, fingerprint=\`${e.fingerprint}\``,
+    );
+    const warningLines = warnings.map((w) => `⚠️ overlap with \`${w.otherBotId}\`: ${w.reason}`);
+    await interaction.editReply(
+      `**Roster** (scanned ${result.scanned}, parsed ${result.parsed}, new/updated ${result.newOrUpdated})\n` +
+      (lines.length ? lines.join("\n") : "_(empty)_") +
+      (warningLines.length ? `\n\n${warningLines.join("\n")}` : ""),
+    );
+  } catch (err) {
+    await interaction.editReply(`Refresh failed: ${(err as Error).message}`);
+  }
+}
+
 async function syncBackendId(state: LineState): Promise<void> {
   const id = state.agent.getBackendId();
   if (!id || id === state.session.backendId) return;
@@ -999,17 +1457,60 @@ function humanAgo(ts: number): string {
 }
 
 async function handleMessage(msg: Message): Promise<void> {
-  if (msg.author.bot) return;
   if (!msg.guild) return; // text-channel handler is guild-only for now
-  if (!isAllowed(msg.author.id)) {
-    // Silent ignore for text — the bot stays out of channel chatter when
-    // someone outside the allowlist talks. Slash commands give a clear
-    // "denied" reply because the user explicitly invoked.
-    return;
-  }
 
   const me = client.user;
   if (!me) return;
+
+  // Don't react to our own messages.
+  if (msg.author.id === me.id) return;
+
+  // Track 2 Phase 2: budget hard cap. Over-budget → tell humans, silent
+  // to other bots (don't waste a token).
+  if (budget.isOverBudget()) {
+    const isOtherBot = msg.author.bot;
+    if (!isOtherBot) {
+      try {
+        await msg.reply(
+          `💸 Today's budget ($${budget.getBudgetUsd().toFixed(2)}) is spent. ` +
+          `Resets at UTC midnight; raise the cap with \`/budget set_usd:<n>\` if needed.`,
+        );
+      } catch { /* ignore */ }
+    }
+    return;
+  }
+
+  // Track 2 Phase 1: bot-vs-human routing.
+  const isOtherBot = msg.author.bot;
+  if (!isOtherBot) {
+    // Human message resets the bot-loop counter for this channel.
+    botReplyCount.set(msg.channelId, 0);
+    if (!isAllowed(msg.author.id)) {
+      // Silent ignore — bot stays out of channel chatter for non-allowlisted
+      // humans. Slash commands give an explicit denied reply.
+      return;
+    }
+  } else {
+    // Loop cap: ignore other-bot messages when papercup has already replied
+    // MAX_BOT_TURNS times since the last human message in this channel.
+    const count = botReplyCount.get(msg.channelId) ?? 0;
+    if (count >= MAX_BOT_TURNS) {
+      console.log(
+        `[track2] bot-loop cap (${MAX_BOT_TURNS}) hit for channel ${msg.channelId} — ignoring msg from ${msg.author.tag}`,
+      );
+      return;
+    }
+    // Reactivity filter: strict (default) requires direct @-mention from
+    // the other bot. loose/chatty fall through to the existing routing logic.
+    const reactivity = getSessionReactivity(msg);
+    if (reactivity === "strict" && !msg.mentions.users.has(me.id)) {
+      return;
+    }
+    // Mention allowlist also gates bot-originated messages.
+    if (!isAllowed(msg.author.id)) {
+      return;
+    }
+  }
 
   // Routing modes (per-guild bind takes precedence over env var):
   //   bound     — guild has a bound channel via /bind. Listen to every message
@@ -1068,12 +1569,19 @@ async function handleTextIntoActiveLine(
   // Heartbeat typing — keep "Papercup is typing…" visible for the whole turn.
   // Discord's typing expires after ~10s, so we ping every 8s while waiting.
   const stopHeartbeat = beginTypingHeartbeat(msg.channel);
+  const renderer = makeProgressRenderer(state.session, msg.channel);
   const tStart = Date.now();
   let reply;
   try {
-    reply = await state.agent.respond(userText);
+    reply = await withPlanContext(
+      state.session,
+      msg.channelId,
+      msg.author.id,
+      () => state.agent.respond(userText, renderer ? { onEvent: (e) => renderer.handle(e) } : undefined),
+    );
   } catch (err) {
     stopHeartbeat();
+    await renderer?.finalize(false, 0);
     if ((err as Error).message === "cancelled") {
       console.log(`[text→line] cancelled by user`);
       return;
@@ -1083,6 +1591,7 @@ async function handleTextIntoActiveLine(
     return;
   }
   stopHeartbeat();
+  await renderer?.finalize(true, (reply.text ?? "").length);
   await syncBackendId(state);
   const replyText = reply.text || "(empty)";
   console.log(`[text→line] reply (${reply.elapsedMs}ms): "${replyText}"`);
@@ -1093,6 +1602,9 @@ async function handleTextIntoActiveLine(
   // last chunk.
   const files = outboxDir ? await scanOutbox(outboxDir) : [];
   await replyChunked(msg, replyText, files);
+  botReplyCount.set(msg.channelId, (botReplyCount.get(msg.channelId) ?? 0) + 1);
+  await budget.record(state.session.model, reply.inputTokens, reply.outputTokens);
+  refreshRichPresence();
 
   // Also speak it on the active voice line.
   if (reply.text) {
@@ -1112,31 +1624,78 @@ async function handleTextOnlyChat(msg: Message, userText: string, outboxDir?: st
   const stopHeartbeat = beginTypingHeartbeat(msg.channel);
 
   let chat = textChats.get(msg.channelId);
+  let firstTurnKind: "new" | "resumed" | undefined;
   if (!chat) {
+    // Prefer resuming the most-recently-active session bound to this channel.
+    // Survives bot restarts so the user keeps their context.
+    let prior = sessions.findLatestForChannel(msg.channelId, "text");
     const channelName = "name" in msg.channel ? (msg.channel as { name: string }).name : msg.channelId;
-    const session = await sessions.create({ name: `chat-${channelName}` });
-    await sessions.setMode(session.id, "text");
+    // Auto-migration: older sessions don't have channelId set. If a session
+    // exists with the conventional name `chat-<channel>` and no channelId,
+    // adopt it for this channel and persist the binding so subsequent
+    // restarts find it via the fast path above.
+    if (!prior) {
+      const byName = sessions.findByName(`chat-${channelName}`);
+      if (byName && !byName.channelId && byName.mode === "text") {
+        await sessions.setChannelId(byName.id, msg.channelId);
+        prior = byName;
+        console.log(`[text-chat] migrated legacy session "${byName.name}" → channelId=${msg.channelId}`);
+      }
+    }
+    let session: Session;
+    let resume = false;
+    if (prior) {
+      session = prior;
+      resume = true;
+      firstTurnKind = "resumed";
+      console.log(`[text-chat] resuming "${session.name}" (last used ${humanAgo(session.lastActiveAt)}) for channel ${msg.channelId}`);
+    } else {
+      session = await sessions.create({ name: `chat-${channelName}` });
+      await sessions.setMode(session.id, "text");
+      await sessions.setChannelId(session.id, msg.channelId);
+      Object.assign(session, sessions.findByName(session.name) ?? session);
+      firstTurnKind = "new";
+      console.log(`[text-chat] auto-spawn "${session.name}" for channel ${msg.channelId}`);
+    }
     const agent = new SpeakerAgent();
+    const startSessionId = resume ? (session.backendId ?? session.id) : session.id;
     await agent.start({
-      sessionId: session.id,
-      resume: false,
+      sessionId: startSessionId,
+      resume,
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,
-    allowedMcps: session.allowedMcps,
+      allowedMcps: session.allowedMcps,
       mode: "text",
+      backendName: session.backend,
     });
     chat = { session, agent };
     textChats.set(msg.channelId, chat);
-    console.log(`[text-chat] auto-spawn "${session.name}" for channel ${msg.channelId}`);
+  }
+
+  // One-time per-channel session indicator. Fires for both new and resumed
+  // first turns after each bot start.
+  if (firstTurnKind && !firstTurnAnnounced.has(msg.channelId)) {
+    firstTurnAnnounced.add(msg.channelId);
+    await postSessionIndicator(msg, chat.session, chat.agent, firstTurnKind);
   }
 
   const tStart = Date.now();
+  const renderer = makeProgressRenderer(chat.session, msg.channel);
   let reply;
   try {
-    reply = await chat.agent.respond(userText);
+    reply = await withPlanContext(
+      chat.session,
+      msg.channelId,
+      msg.author.id,
+      () => chat.agent.respond(
+        userText,
+        renderer ? { onEvent: (e) => renderer.handle(e) } : undefined,
+      ),
+    );
   } catch (err) {
     stopHeartbeat();
+    await renderer?.finalize(false, 0);
     if ((err as Error).message === "cancelled") {
       console.log(`[text-chat] cancelled by user`);
       return;
@@ -1146,12 +1705,31 @@ async function handleTextOnlyChat(msg: Message, userText: string, outboxDir?: st
     return;
   }
   stopHeartbeat();
+  await renderer?.finalize(true, (reply.text ?? "").length);
   console.log(`[text-chat] reply (${reply.elapsedMs}ms, total ${Date.now() - tStart}ms): "${reply.text}"`);
   await sessions.touch(chat.session.id);
 
   const replyText = reply.text || "(empty)";
   const files = outboxDir ? await scanOutbox(outboxDir) : [];
   await replyChunked(msg, replyText, files);
+  botReplyCount.set(msg.channelId, (botReplyCount.get(msg.channelId) ?? 0) + 1);
+  await budget.record(chat.session.model, reply.inputTokens, reply.outputTokens);
+  refreshRichPresence();
+}
+
+/**
+ * Returns a ProgressRenderer if the session has streaming enabled and the
+ * channel supports sending text messages; undefined otherwise. Caller's
+ * onEvent callsite handles undefined (no streaming UI).
+ */
+function makeProgressRenderer(
+  session: Session,
+  channel: TextBasedChannel,
+): ProgressRenderer | undefined {
+  const mode = (session.streaming ?? "off") as StreamingMode;
+  if (mode === "off") return undefined;
+  if (!("send" in channel)) return undefined;
+  return new ProgressRenderer(channel, mode);
 }
 
 async function handleSay(interaction: ChatInputCommandInteraction): Promise<void> {

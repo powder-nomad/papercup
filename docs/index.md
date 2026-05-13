@@ -161,10 +161,14 @@ brew install mecab mecab-ipadic openssl pkg-config
 | VAD | Silero | Only option |
 | STT | Whisper | `small` (multilingual, default) auto-detects 99 languages; `base` / `base.en` / `small.en` available |
 | TTS | Kokoro + MeloTTS + XTTS-v2 (`auto`) | Kokoro: en/ja/zh/es/fr/hi/it/pt. Korean → MeloTTS (light, monotone) or XTTS-v2 (~58 voices, voice cloning). Set via `TTS_KO_ENGINE` |
-| Agent | Claude Code / Codex / Anthropic API | Switch via `AGENT_BACKEND`; CLIs use existing login |
-| Per-session config | model · effort · permissions · notify · mode | Set via `/pickup` flags or hot-swap mid-session via `/model` `/effort` `/permissions` `/notify` |
+| Agent | 10 backends (7 CLI agents + 3 HTTP APIs) | claude-code · codex · aider · gemini-cli · opencode · crush · amp · anthropic-api · openai-compat · gemini-api. Switch via `/backend` at runtime. |
+| Per-session config | model · effort · permissions · backend · streaming · reactivity · notify · mode | Set via `/pickup` flags or hot-swap mid-session via individual slash commands |
 | Modes | Voice (phone-call prompt) + Text (vibecoding) | `/pickup mode:voice` or `mode:text`. Text mode drops the system prompt → normal Claude Code behavior |
 | Reasoning effort | minimal · low · medium · high · xhigh · max | xhigh / max are Opus-only |
+| Live progress | sticky message, optional event log | Text mode + `/streaming summary\|full`. Anti-bomb: edit-throttled, auto-skips short turns |
+| Budget tracking | per-day USD + tokens, daily cap | `BOT_DAILY_BUDGET_USD` or `/budget set_usd:<n>`; live on bot's rich-presence |
+| Process hygiene | detached spawn, group-kill cancel, boot-time reaper | Each agent turn tracked in `data/process-registry.json`; orphans cleaned up on restart |
+| Multi-bot | loop cap, reactivity modes, in-band roster | Multiple operators can co-host bots in one channel; cap prevents bot-to-bot loops |
 | Transport | Discord voice + text | Bind a single channel via `/bind`, or @-mention anywhere |
 
 See **[Slash commands](/components/slash-commands)** for the runtime surface and **[Components](/components/voice-pipeline)** for the deep dive.

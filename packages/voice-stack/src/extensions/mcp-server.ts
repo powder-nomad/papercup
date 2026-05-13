@@ -8,6 +8,25 @@ import { z } from "zod";
 import type { ExtensionManager } from "./manager.js";
 
 /**
+ * Optional dispatcher for the interactive plan-mode `present_options` tool.
+ * Implemented in the bot package; injected here to keep voice-stack
+ * Discord-agnostic.
+ */
+export interface PlanQuestionDispatcher {
+  ask(opts: {
+    question: string;
+    options: string[];
+    channelId: string;
+    ownerUserId: string;
+  }): Promise<string>;
+}
+
+export interface PlanContext {
+  channelId: string;
+  ownerUserId: string;
+}
+
+/**
  * Embedded MCP server that exposes the ExtensionManager as Claude Code tools.
  * Listens on a localhost port; each `claude -p` subprocess connects via the
  * URL passed in --mcp-config.
@@ -19,7 +38,11 @@ export class ExtensionMcpServer {
   private port: number = 0;
   private url: string = "";
 
-  constructor(private readonly manager: ExtensionManager) {
+  constructor(
+    private readonly manager: ExtensionManager,
+    private readonly questionDispatcher?: PlanQuestionDispatcher,
+    private readonly getPlanContext?: () => PlanContext | undefined,
+  ) {
     this.app.use(express.json({ limit: "4mb" }));
     this.app.post("/mcp", (req, res) => this.handleMcpPost(req, res));
     this.app.get("/mcp", (req, res) => this.handleMcpGetDelete(req, res));
@@ -140,6 +163,66 @@ export class ExtensionMcpServer {
         return { content: [{ type: "text", text: JSON.stringify(arr) }] };
       },
     );
+
+    if (this.questionDispatcher && this.getPlanContext) {
+      const dispatcher = this.questionDispatcher;
+      const getCtx = this.getPlanContext;
+      server.registerTool(
+        "present_options",
+        {
+          description:
+            "Ask the user a multiple-choice question and wait for their answer. " +
+            "Use this in plan mode to interview the user before producing the plan. " +
+            "Provide a short, specific question and 2–4 short candidate answers. " +
+            "The tool blocks until the user clicks one. " +
+            "Possible return values: " +
+            "(a) one of the strings you provided in `options` — they picked it; " +
+            "(b) any other free-text — they picked 'Other...' and typed; " +
+            "(c) the literal string '__USER_WANTS_TO_DISCUSS__' (optionally followed by a newline + their opening message) — " +
+            "they want to drop the interview and have a free-form conversation: stop calling this tool and engage in chat; " +
+            "(d) the literal string '__SKIP_TO_PLAN__' — they want you to stop asking and produce the final plan now with whatever you already know.",
+          inputSchema: {
+            question: z.string().min(1).describe("The question to ask. Keep it short and specific."),
+            options: z
+              .array(z.string().min(1).max(80))
+              .min(2)
+              .max(4)
+              .describe("2–4 candidate answers. Each ≤ 80 chars (Discord button label limit)."),
+          },
+        },
+        async ({ question, options }) => {
+          const ctx = getCtx();
+          if (!ctx) {
+            return {
+              content: [{
+                type: "text",
+                text: "ERROR: present_options is only available during an interactive plan-mode turn. " +
+                      "Do not call this tool again in this turn; produce the plan as text instead.",
+              }],
+              isError: true,
+            };
+          }
+          try {
+            const answer = await dispatcher.ask({
+              question,
+              options,
+              channelId: ctx.channelId,
+              ownerUserId: ctx.ownerUserId,
+            });
+            return { content: [{ type: "text", text: answer }] };
+          } catch (err) {
+            return {
+              content: [{
+                type: "text",
+                text: `ERROR: present_options failed: ${(err as Error).message}. ` +
+                      "Fall back to producing the plan as text.",
+              }],
+              isError: true,
+            };
+          }
+        },
+      );
+    }
 
     return server;
   }

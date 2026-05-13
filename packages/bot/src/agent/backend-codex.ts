@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import type { AgentBackend, AgentBackendOpts, AgentReply } from "./backend.js";
+import type { AgentBackend, AgentBackendOpts, AgentReply, RespondOptions } from "./backend.js";
 
 /**
  * OpenAI Codex CLI backend. Uses `codex exec` per turn — first turn boots a
@@ -48,7 +48,7 @@ export class CodexBackend implements AgentBackend {
     return true;
   }
 
-  async respond(userText: string): Promise<AgentReply> {
+  async respond(userText: string, _opts?: RespondOptions): Promise<AgentReply> {
     const projectDirs = process.env.PROJECT_DIRS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [];
     const sandbox = process.env.CODEX_SANDBOX ?? "read-only";
 
@@ -165,3 +165,6 @@ function parseCodexJsonl(stdout: string): CodexParseResult {
 
   return { text: text.trim(), threadId, inputTokens, outputTokens };
 }
+
+import { registerBackend } from "./backend.js";
+registerBackend("codex", () => new CodexBackend());

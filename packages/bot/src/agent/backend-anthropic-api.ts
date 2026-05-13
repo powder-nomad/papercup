@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { AgentBackend, AgentBackendOpts, AgentReply } from "./backend.js";
+import type { AgentBackend, AgentBackendOpts, AgentReply, RespondOptions } from "./backend.js";
 
 type Turn = { role: "user" | "assistant"; content: string };
 
@@ -30,7 +30,9 @@ export class AnthropicApiBackend implements AgentBackend {
     return true;
   }
 
-  async respond(userText: string): Promise<AgentReply> {
+  async respond(userText: string, _opts?: RespondOptions): Promise<AgentReply> {
+    // Streaming events are not implemented for this backend; the caller's
+    // onEvent (if any) is ignored. The final AgentReply is still returned.
     if (!this.client) throw new Error("AnthropicApiBackend: start() not called");
     this.history.push({ role: "user", content: userText });
 
@@ -90,3 +92,6 @@ export class AnthropicApiBackend implements AgentBackend {
     };
   }
 }
+
+import { registerBackend } from "./backend.js";
+registerBackend("anthropic-api", () => new AnthropicApiBackend());

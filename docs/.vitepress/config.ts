@@ -44,6 +44,8 @@ const enSidebar: DefaultTheme.SidebarMulti = {
         { text: "Extension subagents", link: "/components/extensions" },
         { text: "Sessions", link: "/components/sessions" },
         { text: "Channel binding", link: "/components/channel-binding" },
+        { text: "Process management", link: "/components/process-management" },
+        { text: "Multi-bot orchestration", link: "/components/multi-bot" },
         { text: "Korean (and other languages)", link: "/components/korean" },
       ],
     },

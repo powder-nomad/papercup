@@ -1,4 +1,9 @@
-import { createAgentBackend, type AgentBackend, type AgentReply } from "./backend.js";
+import {
+  createAgentBackend,
+  type AgentBackend,
+  type AgentReply,
+  type RespondOptions,
+} from "./backend.js";
 
 const SYSTEM_PROMPT = `You are Papercup, a voice on the other end of a phone call.
 
@@ -62,6 +67,12 @@ function pickDefaultBackend(): string {
 export type SpeakerAgentOpts = {
   sessionId?: string;
   resume?: boolean;
+  /**
+   * Override the default backend for this session. When unset, falls back to
+   * pickDefaultBackend (AGENT_BACKEND env or "claude-code"). Used to honor
+   * `session.backend` from the session store, and the `/backend` command.
+   */
+  backendName?: string;
   /** Per-session model override; falls back to AGENT_MODEL env. */
   model?: string;
   /** Reasoning-effort hint; backend-specific translation. */
@@ -80,15 +91,41 @@ export type SpeakerAgentOpts = {
 };
 
 export class SpeakerAgent {
-  private readonly backend: AgentBackend;
+  private backend: AgentBackend;
   private started = false;
+  private currentBackendName: string;
 
   constructor() {
-    this.backend = createAgentBackend(pickDefaultBackend());
+    this.currentBackendName = pickDefaultBackend();
+    this.backend = createAgentBackend(this.currentBackendName);
+  }
+
+  getBackendName(): string {
+    return this.currentBackendName;
+  }
+
+  /**
+   * Stop the current backend and replace it with a different one.
+   *
+   * Cross-backend session resume is impossible (a claude-code session id is
+   * meaningless to opencode), so this resets the conversation history.
+   * Caller is expected to inform the user that prior turns won't carry over.
+   */
+  async swapBackend(name: string, opts: SpeakerAgentOpts = {}): Promise<void> {
+    if (name === this.currentBackendName) return;
+    if (this.started) this.backend.stop();
+    this.backend = createAgentBackend(name);
+    this.currentBackendName = name;
+    this.started = false;
+    await this.start({ ...opts, backendName: name });
   }
 
   async start(opts: SpeakerAgentOpts = {}): Promise<void> {
     if (this.started) return;
+    if (opts.backendName && opts.backendName !== this.currentBackendName) {
+      this.backend = createAgentBackend(opts.backendName);
+      this.currentBackendName = opts.backendName;
+    }
     const mode = opts.mode ?? "voice";
     // Default permission policy:
     //   text → bypassPermissions (vibecoding; piped stdio can't service prompts)
@@ -115,9 +152,9 @@ export class SpeakerAgent {
     this.backend.reset();
   }
 
-  async respond(userText: string): Promise<AgentReply> {
+  async respond(userText: string, opts: RespondOptions = {}): Promise<AgentReply> {
     if (!this.started) await this.start();
-    return this.backend.respond(userText);
+    return this.backend.respond(userText, opts);
   }
 
   /** Aborts the current respond() if any is running. */

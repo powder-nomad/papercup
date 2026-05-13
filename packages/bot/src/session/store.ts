@@ -53,9 +53,37 @@ export type Session = {
    * — papercup doesn't register new servers, it just gates tool access.
    */
   allowedMcps?: string[];
+  /**
+   * Streaming progress UI in Discord during this session's text turns.
+   * - "off"     : no progress message, just the final reply (default)
+   * - "summary" : single sticky message edited in place; latest activity
+   * - "full"    : sticky message + rolling log of last ~8 tool/thinking
+   *               events with adjacent-duplicate collapse ("Read ×5")
+   * Voice mode ignores this (no Discord channel to post into).
+   */
+  streaming?: "off" | "summary" | "full";
+  /**
+   * Multi-bot reactivity (Track 2 Phase 1). Controls whether this bot
+   * responds to messages from *other* bots in the same channel.
+   * - "strict" (default): ignore other bots unless directly @-mentioned
+   * - "loose"           : respond to other bots without @-mention
+   * - "chatty"          : same as loose; reserved for future "proactive
+   *                       intervention" semantics
+   * Human messages are unaffected by this field (existing bound-channel /
+   * @-mention rules still apply).
+   */
+  reactivity?: "strict" | "loose" | "chatty";
+  /**
+   * Discord channel id this text session is bound to. Set when a session is
+   * auto-spawned for a text channel; used to find-and-resume the same session
+   * across bot restarts so context survives. Voice sessions don't set this.
+   */
+  channelId?: string;
 };
 
 export type SessionEffort = NonNullable<Session["effort"]>;
+export type SessionStreaming = NonNullable<Session["streaming"]>;
+export type SessionReactivity = NonNullable<Session["reactivity"]>;
 
 type Persisted = { sessions: Session[] };
 
@@ -191,6 +219,74 @@ export class SessionStore {
       delete s.permissionMode;
     } else {
       s.permissionMode = pm;
+    }
+    s.lastActiveAt = Date.now();
+    await this.save();
+    return s;
+  }
+
+  async setBackend(id: string, backend: string | undefined): Promise<Session | undefined> {
+    const s = this.sessions.find((s) => s.id === id);
+    if (!s) return undefined;
+    if (backend === undefined) {
+      delete s.backend;
+    } else {
+      s.backend = backend;
+    }
+    s.lastActiveAt = Date.now();
+    await this.save();
+    return s;
+  }
+
+  async setStreaming(
+    id: string,
+    streaming: SessionStreaming | undefined,
+  ): Promise<Session | undefined> {
+    const s = this.sessions.find((s) => s.id === id);
+    if (!s) return undefined;
+    if (streaming === undefined) {
+      delete s.streaming;
+    } else {
+      s.streaming = streaming;
+    }
+    s.lastActiveAt = Date.now();
+    await this.save();
+    return s;
+  }
+
+  async setChannelId(id: string, channelId: string | undefined): Promise<Session | undefined> {
+    const s = this.sessions.find((s) => s.id === id);
+    if (!s) return undefined;
+    if (channelId === undefined) {
+      delete s.channelId;
+    } else {
+      s.channelId = channelId;
+    }
+    s.lastActiveAt = Date.now();
+    await this.save();
+    return s;
+  }
+
+  /**
+   * Return the most-recently-active session bound to `channelId`. Used to
+   * resume a text-mode chat across bot restarts so context isn't dropped.
+   */
+  findLatestForChannel(channelId: string, mode?: "voice" | "text"): Session | undefined {
+    return this.sessions
+      .filter((s) => s.channelId === channelId && (mode === undefined || s.mode === mode))
+      .sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
+  }
+
+  async setReactivity(
+    id: string,
+    reactivity: SessionReactivity | undefined,
+  ): Promise<Session | undefined> {
+    const s = this.sessions.find((s) => s.id === id);
+    if (!s) return undefined;
+    if (reactivity === undefined) {
+      delete s.reactivity;
+    } else {
+      s.reactivity = reactivity;
     }
     s.lastActiveAt = Date.now();
     await this.save();

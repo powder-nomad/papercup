@@ -1,6 +1,6 @@
 # Slash commands
 
-Discord slash commands are how you drive Papercup at runtime. There are 12. The bot registers them per-guild on every restart (or via `npm run -w @papercup/bot register` after schema changes).
+Discord slash commands are how you drive Papercup at runtime. There are 19. The bot registers them per-guild on every restart (or via `npm run -w @papercup/bot register` after schema changes).
 
 ## Quick reference
 
@@ -9,7 +9,9 @@ Discord slash commands are how you drive Papercup at runtime. There are 12. The 
 | `/pickup` | Start a session (voice or text) with optional `name`, `model`, `effort`, `permission-mode` |
 | `/hangup` | End the active container (voice line OR text chat); session preserved for `/resume` |
 | `/resume name:<x>` | Auto-mode resume — picks voice vs text from context |
+| `/cancel` | SIGTERM the in-flight agent process group for the active session |
 | `/sessions` | List recent sessions |
+| `/status` | Show active session's config + currently-running background extensions |
 | `/rename name:<x>` | Rename current session |
 | `/say text:<x>` | Speak text via TTS into the active voice line |
 | `/bind channel:<#chan>` | (Admin) Bind bot to a text channel — every message there triggers the bot |
@@ -17,7 +19,15 @@ Discord slash commands are how you drive Papercup at runtime. There are 12. The 
 | `/model name:<x>` | Hot-swap the agent model on the active session |
 | `/effort level:<x>` | Hot-swap the reasoning effort on the active session |
 | `/permissions mode:<x>` | Hot-swap the tool permission policy |
+| `/backend name:<x>` | Switch the agent backend (claude-code, codex, gemini-cli, openai-compat, …). Resets conversation history |
+| `/models action:list\|refresh` | Show known model→backend mapping; refresh re-fetches from provider APIs |
 | `/notify state:on\|off` | Toggle TTS/text alerts when a spawned extension settles |
+| `/mcp` | Show or change which MCP servers' tools the active session can call |
+| `/streaming mode:off\|summary\|full` | Live progress UI for text-mode turns |
+| `/reactivity mode:strict\|loose\|chatty` | How this bot reacts to messages from OTHER bots |
+| `/budget [set_usd:<n>]` | Show today's USD + token usage; optionally set/disable daily cap |
+| `/announce` | Post this bot's structured roster entry to the `#roster` channel |
+| `/refresh-roster` | Re-scrape the `#roster` channel to rebuild the local roster |
 
 ## `/pickup` — start a session
 
@@ -111,3 +121,71 @@ Requires the **Manage Server** permission. State persists in `data/guild-config.
 ```
 
 `/sessions` shows up to 15 entries with relative timestamps. Names are slugified (lowercase, hyphens). `/rename` errors if the new name collides.
+
+## `/cancel`
+
+SIGTERM the in-flight agent's process group (claude/codex/aider/etc. + any descendants it spawned — cloudflared, uvicorn, etc.). Works for the active session in this channel/guild. If `/cancel` returns "Nothing in flight," check `data/process-registry.json` and the system process list — for true orphans, the boot-time reaper handles cleanup after the next restart.
+
+## `/status`
+
+Ephemeral reply showing the active session's `model`, `effort`, `permissionMode`, `mode`, plus a count of currently-running background extensions across the bot (not just this session's).
+
+## `/backend` — switch the agent backend
+
+```
+/backend                            # show current + list of 10 registered backends
+/backend name:openai-compat         # switch this session to openai-compat
+```
+
+**Resets the conversation history** (cross-backend session-resume isn't possible — a claude-code session id is meaningless to codex or opencode). The persisted `session.backend` field survives bot restarts. See [speaker-agent](/components/speaker-agent#backends).
+
+## `/models` — model catalog
+
+```
+/models                  # default action = list
+/models action:list      # show known models grouped by provider
+/models action:refresh   # re-fetch live model lists from Anthropic, OpenAI, Gemini APIs
+```
+
+Static catalog of common models ships with the bot. Live `refresh` requires the relevant API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` / `OPENAI_COMPAT_API_KEY`, `GEMINI_API_KEY`). Each model entry lists which backends can run it — e.g. `claude-opus-4-7 → [claude-code, anthropic-api]`.
+
+## `/streaming` — live progress
+
+```
+/streaming                         # show current mode for the active session
+/streaming mode:off                # default. final reply only
+/streaming mode:summary            # sticky one-line "🤔 Edit: foo.ts · 4 tools · 12s elapsed"
+/streaming mode:full               # sticky message + last 8 events scrolling, adjacent-duplicate collapse
+```
+
+Only applies to text-mode sessions and only for the `claude-code` backend (it's the only one that streams `tool_use` / `tool_result` events). Anti-bomb: edit-throttled to 1.5s, auto-skip for turns under 5s.
+
+## `/reactivity` — multi-bot guardrails
+
+```
+/reactivity                        # show current + bot-loop counter
+/reactivity mode:strict            # default. respond to other bots only when @-mentioned
+/reactivity mode:loose             # respond to other bots without @-mention
+/reactivity mode:chatty            # reserved — same as loose today
+```
+
+Human messages are unaffected — existing bound-channel / @-mention rules still apply. The bot-loop cap (`BOT_BOT_MAX_TURNS`, default 3) silences papercup after that many consecutive bot replies without a human turn. See [multi-bot](/components/multi-bot).
+
+## `/budget` — cost tracking
+
+```
+/budget                            # show today's USD + tokens + 7-day breakdown
+/budget set_usd:10                 # set daily cap to $10
+/budget set_usd:0                  # disable cap
+```
+
+Cap resets at UTC midnight. When over budget, humans get an explicit "budget spent" reply; other bots are silently ignored. The bot's Discord rich-presence shows `46% of $10/day` live. Pricing covers Claude Opus/Sonnet/Haiku 4.x, GPT-5/4o/o3, Gemini 2.5; unknown models record tokens only.
+
+## `/announce` and `/refresh-roster` — in-band bot roster
+
+```
+/announce                          # post this bot's roster entry to BOT_ROSTER_CHANNEL_ID
+/refresh-roster                    # re-scrape that channel + check workdir overlap
+```
+
+Requires `BOT_ROSTER_CHANNEL_ID` env set. The announcement is a structured code-block message (`papercup-roster v1`) with bot_id, owner, workdir, reactivity, budget, fingerprint, public-key. Other operators' bots scrape the same channel to discover each other. No out-of-band coordination required. See [multi-bot](/components/multi-bot).

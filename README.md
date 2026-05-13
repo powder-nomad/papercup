@@ -41,7 +41,11 @@ Want flag-customized output? Use the [installer wizard](https://powder-nomad.git
 | VAD | Silero | Only option |
 | STT | Whisper | `base`/`base.en`/`small`/`small.en`. Default `small` for multilingual |
 | TTS | Kokoro + MeloTTS + XTTS-v2 | Auto-routes ko → MeloTTS or XTTS-v2 (configurable); Kokoro for en/ja/zh/es/fr/hi/it/pt |
-| Agent | Claude Code / Codex / Anthropic API | Switch via `AGENT_BACKEND`. CLI backends use existing login |
+| Agent | **10 backends** (7 CLI agents + 3 HTTP APIs) | claude-code · codex · aider · gemini-cli · opencode · crush · amp · anthropic-api · openai-compat · gemini-api. Switch at runtime with `/backend`. |
+| Live progress | sticky message, optional event log | `/streaming summary\|full` in text mode |
+| Budget tracking | daily USD + tokens, hard cap | `BOT_DAILY_BUDGET_USD` or `/budget set_usd:<n>`; bot's rich-presence shows current % |
+| Process hygiene | detached spawn, group-kill cancel, boot-time reaper | Each agent turn tracked in `data/process-registry.json`; orphans cleaned up on restart |
+| Multi-bot | loop cap, reactivity modes, in-band roster | Co-host multiple papercup bots in one channel; cap prevents bot-to-bot loops |
 | Transport | Discord voice + text | Per-guild bind via `/bind`, or @-mention anywhere |
 
 ## Three distribution shapes

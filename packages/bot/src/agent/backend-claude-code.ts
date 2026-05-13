@@ -1,6 +1,19 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import type { AgentBackend, AgentBackendOpts, AgentReply } from "./backend.js";
+import type {
+  AgentBackend,
+  AgentBackendOpts,
+  AgentReply,
+  RespondOptions,
+  TurnEvent,
+} from "./backend.js";
+import { processRegistry, makeCommandPreview } from "./process-registry.js";
+
+// Off by default — legitimate turns can take hours (install scripts, foreground
+// cloudflared, long extension supervision). The registry + boot reaper already
+// covers the *across-restart* orphan case, which was the original motivation.
+// Set PAPERCUP_TURN_TIMEOUT_S to a positive integer (seconds) to enforce a cap.
+const DEFAULT_TURN_TIMEOUT_S = 0;
 
 /**
  * Claude Code CLI backend. Uses `claude -p` per turn with --session-id /
@@ -37,18 +50,32 @@ export class ClaudeCodeBackend implements AgentBackend {
 
   cancel(): boolean {
     if (!this.inFlight) return false;
-    try {
-      this.inFlight.kill("SIGTERM");
-    } catch { /* ignore */ }
+    this.killProcessGroup(this.inFlight);
     return true;
+  }
+
+  /**
+   * SIGTERM the whole process group, not just the leader. The spawned
+   * `claude -p` may have spawned its own descendants (cloudflared, uvicorn,
+   * etc.); without group-kill those become orphans even after the user
+   * cancels.
+   */
+  private killProcessGroup(proc: ChildProcess): void {
+    if (!proc.pid) return;
+    try {
+      process.kill(-proc.pid, "SIGTERM");
+    } catch {
+      try { proc.kill("SIGTERM"); } catch { /* already dead */ }
+    }
   }
 
   getBackendId(): string | undefined {
     return this.sessionId;
   }
 
-  async respond(userText: string): Promise<AgentReply> {
+  async respond(userText: string, respondOpts: RespondOptions = {}): Promise<AgentReply> {
     if (!this.sessionId) throw new Error("ClaudeCodeBackend: start() not called");
+    const streaming = Boolean(respondOpts.onEvent);
 
     // Speaker tools: in voice mode, read-only built-ins for inline lookups +
     // MCP tools for delegating real work. No Bash/Edit/Write — those run
@@ -62,17 +89,33 @@ export class ClaudeCodeBackend implements AgentBackend {
     const papercupTools = mcpUrl
       ? "mcp__papercup__spawn_extension mcp__papercup__check_extension mcp__papercup__list_extensions"
       : "";
+    // Plan-mode-only tool: present_options runs an interactive multiple-choice
+    // interview via Discord buttons. Gated on permissionMode so it's invisible
+    // (and unallowed) outside plan mode.
+    const planModeTools =
+      mcpUrl && this.opts.permissionMode === "plan"
+        ? "mcp__papercup__present_options"
+        : "";
     // /mcp enable adds these per-session — turns into mcp__<name>__* glob.
     const extraMcpTools = (this.opts.allowedMcps ?? [])
       .map((name) => `mcp__${name}__*`)
       .join(" ");
-    const allowedTools = [baseTools, papercupTools, extraMcpTools].filter(Boolean).join(" ");
+    const allowedTools = [baseTools, papercupTools, planModeTools, extraMcpTools]
+      .filter(Boolean)
+      .join(" ");
 
     const args: string[] = [
       "-p", userText,
       "--allowedTools", allowedTools,
-      "--output-format", "json",
     ];
+    if (streaming) {
+      // stream-json + verbose: emits one NDJSON event per intermediate step
+      // (assistant message blocks, tool_use/tool_result) plus a final `result`
+      // event we extract the answer + usage from.
+      args.push("--output-format", "stream-json", "--verbose");
+    } else {
+      args.push("--output-format", "json");
+    }
     // Only override the CLI's default system prompt in voice mode (where it's
     // set). Text mode passes no system prompt so claude -p behaves as a
     // normal Claude Code session.
@@ -118,19 +161,93 @@ export class ClaudeCodeBackend implements AgentBackend {
     );
 
     const t0 = Date.now();
-    const proc = spawn("claude", args, { stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp" });
+    // detached: true makes the spawned process the leader of its own process
+    // group. We need that so cancel/timeout can SIGTERM the whole tree via
+    // process.kill(-pid, …) instead of leaving descendants behind.
+    const proc = spawn("claude", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: "/tmp",
+      detached: true,
+    });
     this.inFlight = proc;
+    const childPid = proc.pid;
+    if (childPid) {
+      await processRegistry.register({
+        pid: childPid,
+        startedAt: t0,
+        sessionId: this.sessionId,
+        botPid: process.pid,
+        commandPreview: makeCommandPreview(userText),
+      });
+    }
+
     let stdout = "";
     let stderr = "";
-    proc.stdout?.on("data", (c: Buffer) => (stdout += c.toString()));
+    let streamLineBuffer = "";
+    // Last `type: "result"` event seen in stream-json mode — used as source of
+    // truth for final text + token usage.
+    let streamLastResult: unknown;
+    // Map tool_use.id → tool name, so subsequent tool_result events can
+    // report which tool finished (the result event doesn't repeat the name).
+    const streamToolNames = new Map<string, string>();
+
+    proc.stdout?.on("data", (c: Buffer) => {
+      const chunk = c.toString();
+      if (!streaming) {
+        stdout += chunk;
+        return;
+      }
+      streamLineBuffer += chunk;
+      let nl: number;
+      while ((nl = streamLineBuffer.indexOf("\n")) !== -1) {
+        const line = streamLineBuffer.slice(0, nl);
+        streamLineBuffer = streamLineBuffer.slice(nl + 1);
+        if (!line.trim()) continue;
+        try {
+          const ev = JSON.parse(line);
+          const out = translateStreamEvent(ev, streamToolNames);
+          if (out.kind === "result") {
+            streamLastResult = ev;
+          } else if (out.events.length && respondOpts.onEvent) {
+            for (const turnEvent of out.events) {
+              try { respondOpts.onEvent(turnEvent); } catch { /* swallow */ }
+            }
+          }
+        } catch {
+          // Best-effort: malformed line is ignored. We still have the registry
+          // for cleanup and the result event (if any) for final extraction.
+        }
+      }
+    });
     proc.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
+
+    const timeoutSec = Number(process.env.PAPERCUP_TURN_TIMEOUT_S ?? DEFAULT_TURN_TIMEOUT_S);
+    const timeoutMs = Number.isFinite(timeoutSec) && timeoutSec > 0 ? timeoutSec * 1000 : 0;
+    let timedOut = false;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
     const code = await new Promise<number>((resolve, reject) => {
       proc.on("error", reject);
       proc.on("exit", (c) => resolve(c ?? -1));
+      if (timeoutMs > 0) {
+        timeoutHandle = setTimeout(() => {
+          timedOut = true;
+          console.warn(
+            `[agent:claude-code] turn timeout after ${timeoutSec}s — killing pid=${childPid}`,
+          );
+          this.killProcessGroup(proc);
+        }, timeoutMs);
+      }
     }).finally(() => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       this.inFlight = undefined;
+      if (childPid) void processRegistry.unregister(childPid);
     });
     const elapsedMs = Date.now() - t0;
+
+    if (timedOut) {
+      throw new Error(`turn timed out after ${timeoutSec}s (env PAPERCUP_TURN_TIMEOUT_S)`);
+    }
 
     if (code !== 0) {
       // SIGTERM → exit code 143 (or signal-set; node maps to negative). Surface
@@ -144,13 +261,27 @@ export class ClaudeCodeBackend implements AgentBackend {
     let text = "";
     let inputTokens = 0;
     let outputTokens = 0;
-    try {
-      const parsed = JSON.parse(stdout);
-      text = String(parsed.result ?? "").trim();
-      inputTokens = Number(parsed.usage?.input_tokens ?? 0);
-      outputTokens = Number(parsed.usage?.output_tokens ?? 0);
-    } catch {
-      text = stdout.trim();
+    if (streaming) {
+      if (streamLastResult && typeof streamLastResult === "object") {
+        const r = streamLastResult as Record<string, unknown>;
+        text = String(r.result ?? "").trim();
+        const usage = r.usage as Record<string, unknown> | undefined;
+        inputTokens = Number(usage?.input_tokens ?? 0);
+        outputTokens = Number(usage?.output_tokens ?? 0);
+      } else {
+        // Stream ended without a final result event (cancellation, crash).
+        // Fall back to whatever was buffered in the line buffer.
+        text = streamLineBuffer.trim();
+      }
+    } else {
+      try {
+        const parsed = JSON.parse(stdout);
+        text = String(parsed.result ?? "").trim();
+        inputTokens = Number(parsed.usage?.input_tokens ?? 0);
+        outputTokens = Number(parsed.usage?.output_tokens ?? 0);
+      } catch {
+        text = stdout.trim();
+      }
     }
 
     this.firstTurn = false;
@@ -158,6 +289,92 @@ export class ClaudeCodeBackend implements AgentBackend {
   }
 }
 
+/**
+ * Translate one parsed stream-json event into TurnEvents for the UI.
+ *
+ * Returns `{kind: "result"}` for the final summary event (so the caller can
+ * stash the raw event for text/usage extraction); otherwise returns a list of
+ * TurnEvents (possibly empty) to forward to the progress renderer.
+ */
+function translateStreamEvent(
+  ev: unknown,
+  toolNames: Map<string, string>,
+): { kind: "result" } | { kind: "events"; events: TurnEvent[] } {
+  if (!ev || typeof ev !== "object") return { kind: "events", events: [] };
+  const e = ev as Record<string, unknown>;
+  const type = String(e.type ?? "");
+
+  if (type === "result") return { kind: "result" };
+
+  if (type === "assistant") {
+    const msg = e.message as { content?: unknown[] } | undefined;
+    const content = Array.isArray(msg?.content) ? msg!.content : [];
+    const events: TurnEvent[] = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      const btype = String(b.type ?? "");
+      if (btype === "thinking") {
+        events.push({ kind: "thinking" });
+      } else if (btype === "text") {
+        const t = String(b.text ?? "");
+        if (t.length > 0) events.push({ kind: "text", deltaChars: t.length });
+      } else if (btype === "tool_use") {
+        const name = String(b.name ?? "tool");
+        const id = String(b.id ?? "");
+        if (id) toolNames.set(id, name);
+        events.push({ kind: "tool_use", name, preview: previewToolInput(name, b.input) });
+      }
+    }
+    return { kind: "events", events };
+  }
+
+  if (type === "user") {
+    const msg = e.message as { content?: unknown[] } | undefined;
+    const content = Array.isArray(msg?.content) ? msg!.content : [];
+    const events: TurnEvent[] = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      if (String(b.type ?? "") !== "tool_result") continue;
+      const id = String(b.tool_use_id ?? "");
+      const name = toolNames.get(id) ?? "tool";
+      const isError = Boolean(b.is_error);
+      events.push({ kind: "tool_result", name, ok: !isError });
+    }
+    return { kind: "events", events };
+  }
+
+  return { kind: "events", events: [] };
+}
+
+function previewToolInput(name: string, input: unknown): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const i = input as Record<string, unknown>;
+  const pick = (k: string): string | undefined => {
+    const v = i[k];
+    return typeof v === "string" && v.length > 0 ? v : undefined;
+  };
+  // Common conventions across Claude Code's built-in tools and most MCPs.
+  const file = pick("file_path") ?? pick("filePath") ?? pick("path");
+  if (file) return basename(file);
+  const command = pick("command");
+  if (command) return command.length > 60 ? command.slice(0, 59) + "…" : command;
+  const pattern = pick("pattern") ?? pick("query");
+  if (pattern) return pattern.length > 60 ? pattern.slice(0, 59) + "…" : pattern;
+  const url = pick("url");
+  if (url) return url;
+  return undefined;
+}
+
+function basename(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+
 // Note: spawn() above runs from cwd: "/tmp" so the speaker agent doesn't pick
 // up the bot's own CLAUDE.md, project memory, or git context. (User-level
 // CLAUDE.md at ~/.claude/CLAUDE.md still loads.)
+
+import { registerBackend } from "./backend.js";
+registerBackend("claude-code", () => new ClaudeCodeBackend());

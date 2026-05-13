@@ -19,6 +19,28 @@ export type AgentReply = {
   elapsedMs: number;
 };
 
+/**
+ * Real-time events emitted by a backend during a single respond() call.
+ * Lets the UI render a live progress view ("now reading X", "now editing Y",
+ * etc.) instead of waiting for the full reply. Only the claude-code backend
+ * emits these today; other backends silently no-op.
+ */
+export type TurnEvent =
+  | { kind: "thinking" }
+  | { kind: "text"; deltaChars: number }
+  | { kind: "tool_use"; name: string; preview?: string }
+  | { kind: "tool_result"; name: string; ok: boolean }
+  | { kind: "error"; message: string };
+
+export type RespondOptions = {
+  /**
+   * Streaming progress callback. If provided AND the backend supports it,
+   * fires for each intermediate event during the turn. Backends that don't
+   * support streaming ignore this and just produce the final AgentReply.
+   */
+  onEvent?: (event: TurnEvent) => void;
+};
+
 export type AgentBackendOpts = {
   /**
    * Optional. When undefined, the backend should use its default behavior
@@ -69,7 +91,7 @@ export interface AgentBackend {
   /** Boot any persistent resources (session id, SDK client, …). */
   start(opts: AgentBackendOpts): Promise<void>;
   /** Respond to one user turn. Backend manages its own conversation history. */
-  respond(userText: string): Promise<AgentReply>;
+  respond(userText: string, opts?: RespondOptions): Promise<AgentReply>;
   /** Clear conversation history; next respond() starts fresh. */
   reset(): void;
   /** Tear down. */
@@ -89,19 +111,59 @@ export interface AgentBackend {
   getBackendId?(): string | undefined;
 }
 
-import { ClaudeCodeBackend } from "./backend-claude-code.js";
-import { AnthropicApiBackend } from "./backend-anthropic-api.js";
-import { CodexBackend } from "./backend-codex.js";
+/**
+ * Plug-in registry of agent backends.
+ *
+ * Built-ins register themselves at module load time (see side-effect imports
+ * below). External code can register additional backends:
+ *
+ *   import { registerBackend } from "@papercup/bot/agent/backend";
+ *   registerBackend("my-thing", () => new MyBackend());
+ *
+ * Then AGENT_BACKEND and /pickup will see it.
+ */
+// Lazy: ESM hoists side-effect imports above any `let`/`const` declarations,
+// so a `let` registry would be in TDZ when backend files self-register on
+// load. `var` hoists with `undefined` initialization, side-stepping TDZ
+// entirely. Yes, `var` at module scope is unfashionable; the alternative is
+// extracting the registry to a separate file, which is more churn.
+// eslint-disable-next-line no-var
+var _registry: Map<string, () => AgentBackend> | undefined;
+function getRegistry(): Map<string, () => AgentBackend> {
+  if (!_registry) _registry = new Map();
+  return _registry;
+}
+
+export function registerBackend(name: string, factory: () => AgentBackend): void {
+  const r = getRegistry();
+  if (r.has(name)) {
+    console.warn(`[backend] re-registering "${name}" — earlier registration overwritten`);
+  }
+  r.set(name, factory);
+}
+
+export function listBackends(): string[] {
+  return [...getRegistry().keys()].sort();
+}
 
 export function createAgentBackend(name: string): AgentBackend {
-  switch (name) {
-    case "claude-code":
-      return new ClaudeCodeBackend();
-    case "codex":
-      return new CodexBackend();
-    case "anthropic-api":
-      return new AnthropicApiBackend();
-    default:
-      throw new Error(`Unknown agent backend: ${name}. Supported: claude-code, codex, anthropic-api`);
+  const factory = getRegistry().get(name);
+  if (!factory) {
+    throw new Error(
+      `Unknown agent backend: "${name}". Available: ${listBackends().join(", ") || "(none registered)"}`,
+    );
   }
+  return factory();
 }
+
+// Side-effect imports — each backend file calls registerBackend() on load.
+import "./backend-claude-code.js";
+import "./backend-anthropic-api.js";
+import "./backend-codex.js";
+import "./backend-openai-compat.js";
+import "./backend-aider-cli.js";
+import "./backend-gemini-cli.js";
+import "./backend-opencode-cli.js";
+import "./backend-crush-cli.js";
+import "./backend-amp-cli.js";
+import "./backend-gemini-api.js";

@@ -82,13 +82,46 @@ The TTS layer auto-routes by detected language. Default `auto` runs Kokoro for E
 
 | Var | Default | Notes |
 | --- | --- | --- |
-| `AGENT_BACKEND` | `claude-code` | `claude-code` / `codex` / `anthropic-api` |
+| `AGENT_BACKEND` | `claude-code` | One of 10 registered backends. CLI agents: `claude-code` · `codex` · `aider-cli` · `gemini-cli` · `opencode-cli` · `crush-cli` · `amp-cli`. HTTP APIs: `anthropic-api` · `openai-compat` · `gemini-api`. Switch at runtime with `/backend`. |
 | `AGENT_MODEL` | `haiku` | Default model. Per-session override via `/model name:<id>` or `/pickup model:<id>` |
-| `AGENT_MAX_TOKENS` | `200` | For `anthropic-api` only |
-| `ANTHROPIC_API_KEY` | — | Required if `AGENT_BACKEND=anthropic-api` |
+| `AGENT_MAX_TOKENS` | `200` | For HTTP API backends (`anthropic-api` / `openai-compat` / `gemini-api`) |
+| `ANTHROPIC_API_KEY` | — | Required if `AGENT_BACKEND=anthropic-api`; also used to populate the model catalog |
 | `CODEX_SANDBOX` | `read-only` | `read-only` / `workspace-write` / `danger-full-access` |
 | `SPEAKER_TOOLS` | `Read Glob Grep` | Built-in CC tools the speaker can use inline |
 | `PROJECT_DIRS` | — | Comma-separated absolute paths the speaker can read |
+| `PAPERCUP_TURN_TIMEOUT_S` | `0` (off) | Per-turn hard cap (seconds). On timeout, SIGTERMs the spawned CLI's process group and rejects with `turn timed out after Ns`. Disabled by default so long extension turns aren't interrupted. |
+
+### `openai-compat` backend
+
+One adapter targeting any `/v1/chat/completions` endpoint. Unlocks OpenAI, Groq, Together.ai, Fireworks, DeepSeek, OpenRouter, LiteLLM, Ollama (local), LM Studio, vLLM via base-URL config.
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `OPENAI_COMPAT_BASE_URL` | — | Required. e.g. `https://api.openai.com/v1`, `https://api.groq.com/openai/v1`, `http://localhost:11434/v1` (Ollama) |
+| `OPENAI_COMPAT_API_KEY` | — | Optional (local providers like Ollama/LM Studio don't need one) |
+| `OPENAI_COMPAT_MODEL_DEFAULT` | `gpt-4o-mini` | Fallback when `AgentBackendOpts.model` unset |
+
+### `gemini-api` backend (native, not the OpenAI shim)
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | — | Required. From [aistudio.google.com](https://aistudio.google.com) |
+| `GEMINI_API_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | Override for proxy / regional endpoints |
+| `GEMINI_API_DEFAULT_MODEL` | `gemini-2.5-flash` | Fallback when `AgentBackendOpts.model` unset |
+
+### CLI agent backends
+
+Every CLI backend follows the same pattern: binary path override, isolated workdir, optional default model, optional extra-args slot.
+
+| Backend | Vars |
+| --- | --- |
+| `aider-cli` | `AIDER_BINARY` · `AIDER_WORKDIR` · `AIDER_EXTRA_ARGS` |
+| `gemini-cli` | `GEMINI_BINARY` · `GEMINI_WORKDIR` · `GEMINI_DEFAULT_MODEL` · `GEMINI_EXTRA_ARGS` |
+| `opencode-cli` | `OPENCODE_BINARY` · `OPENCODE_WORKDIR` · `OPENCODE_DEFAULT_MODEL` · `OPENCODE_EXTRA_ARGS` |
+| `crush-cli` | `CRUSH_BINARY` · `CRUSH_WORKDIR` · `CRUSH_DEFAULT_MODEL` · `CRUSH_YOLO` · `CRUSH_EXTRA_ARGS` |
+| `amp-cli` | `AMP_BINARY` · `AMP_WORKDIR` · `AMP_DEFAULT_MODEL` · `AMP_THREAD` · `AMP_EXTRA_ARGS` |
+
+Each CLI is detached-spawned, process-group-tracked in `data/process-registry.json`, and cancelable via `/cancel`. See [process management](/components/process-management).
 
 ### Per-session (set via slash commands)
 
@@ -101,7 +134,11 @@ These attach to the session record in `data/sessions.json` and survive `/hangup`
 | `mode` | `/pickup mode:voice|text` | Voice mode applies the phone-call persona prompt; text mode passes no system prompt (default Claude Code behavior — markdown OK, multi-paragraph OK) |
 | `permissionMode` | `/pickup permission-mode:<mode>` or `/permissions mode:<mode>` | Tool permission policy. Mode-aware default: text → `bypassPermissions` (vibecoding), voice → `default`. Choices: `default` / `acceptEdits` / `auto` / `bypassPermissions` / `plan` |
 | `notify` | `/notify state:on|off` | When on, an extension settling fires a TTS announcement (voice) or Discord message (text) into the active container |
+| `backend` | `/backend name:<x>` | Which agent backend this session uses (e.g. `claude-code`, `openai-compat`). Persisted across restarts |
 | `backendId` | (auto) | Backend's native session id (Claude Code UUID, Codex thread id) for resume |
+| `streaming` | `/streaming mode:off|summary|full` | Live progress UI for text turns. `off` (default) = final reply only. `summary` = sticky one-line status. `full` = sticky multi-line scrolling log |
+| `reactivity` | `/reactivity mode:strict|loose|chatty` | How this bot reacts to OTHER bots in the channel. `strict` (default) requires @-mention. See [multi-bot](/components/multi-bot) |
+| `channelId` | (auto) | For text sessions: the Discord channel id this session is bound to. Used to auto-resume on the first message after a bot restart |
 
 ## Extensions
 
@@ -112,6 +149,40 @@ Sandbox dirs at `data/extensions/<id>/`. MCP server picks an ephemeral localhost
 | `EXTENSION_PERMISSION_MODE` | `bypassPermissions` | `default` / `acceptEdits` / `auto` / `bypassPermissions` / `plan`. Tighten before public deployment |
 | `EXTENSION_ALLOWED_TOOLS` | `default` | Whitelist for tools the extension can use (e.g. `"Read Edit Write Bash(npm *)"`) |
 | `EXTENSION_DISALLOWED_TOOLS` | — | Explicit denies (e.g. `"WebFetch Bash(rm -rf *)"`) |
+
+## Process management
+
+Each CLI-agent turn (every backend except `anthropic-api` / `openai-compat` / `gemini-api`) spawns as a detached process group, tracked in `data/process-registry.json`. On bot restart, the boot-time reaper SIGTERMs any orphans whose `botPid` doesn't match the current process. Safe by construction: only PIDs the bot explicitly recorded are signaled.
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `PAPERCUP_TURN_TIMEOUT_S` | `0` (off) | See [Speaker agent / env-level](#speaker-agent) — same variable repeated here for cross-reference |
+
+See [process management](/components/process-management) for the full lifecycle.
+
+## Budget tracking
+
+Per-day USD + token tracking, persisted to `data/budget.json`. Pricing table covers Claude Opus/Sonnet/Haiku 4.x, GPT-5/4o/o3, Gemini 2.5 — unknown models record tokens only.
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `BOT_DAILY_BUDGET_USD` | `0` (unlimited) | Daily hard cap in USD. When today's cost ≥ cap, papercup refuses to respond — humans get a "budget spent" message, bots get silent ignore. Cap resets at UTC midnight. Override at runtime with `/budget set_usd:<n>`. |
+
+The bot's Discord rich-presence reflects today's budget percentage live (`46% of $10/day`); humans see it on hover and `/budget` shows the detailed breakdown.
+
+## Multi-bot orchestration
+
+Multiple papercup bots can co-exist in one Discord server, each with its own credentials/model/budget. Several guardrails are configured here.
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `BOT_BOT_MAX_TURNS` | `3` | Per-channel cap: papercup's consecutive replies since the last human message. Hitting the cap silences papercup for that channel until a human chimes in. Prevents bot-to-bot runaway loops. |
+| `BOT_ROSTER_CHANNEL_ID` | — | Designated `#roster` channel (Discord channel id). On boot, papercup scrapes recent messages for `papercup-roster v1` announcements from other bots. Used by `/announce` and `/refresh-roster`. |
+| `BOT_WORKDIR` | `process.cwd()` | This bot's declared filesystem root. Compared against other bots' workdirs on boot — log-only warning if they overlap. |
+| `BOT_OWNER_DISCORD_ID` | — | Operator's Discord user-id, embedded in `/announce` so other operators know who owns this bot. |
+| `BOT_DEFAULT_REACTIVITY` | `strict` | Default reactivity-to-other-bots for newly-created sessions. Per-session override via `/reactivity`. |
+
+See [multi-bot orchestration](/components/multi-bot) for the full picture.
 
 ## Diagnostic
 

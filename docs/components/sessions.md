@@ -44,12 +44,15 @@ See [Slash commands](/components/slash-commands) for the full surface (`/model`,
 | `id` | Bot's stable internal handle (UUID) |
 | `name` | Slugified human name |
 | `backendId` | What the agent backend uses to resume. Usually `id` for `claude-code`; codex assigns its own thread UUID on first turn |
-| `backend` | Records which backend created the session — used to refuse cross-backend resume |
+| `backend` | Which agent backend this session uses (`claude-code`, `openai-compat`, etc.). Survives bot restart and is honored by `/resume` |
 | `mode` | `voice` or `text`. Drives system prompt + container choice on `/resume` auto-mode |
 | `model` | Optional per-session model override (e.g. `claude-opus-4-7`). Falls back to `AGENT_MODEL` env |
 | `effort` | Optional reasoning-effort hint. `minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
 | `permissionMode` | Optional tool-permission policy. `default` / `acceptEdits` / `auto` / `bypassPermissions` / `plan`. Mode-aware default applies when unset |
 | `notify` | If true, extension settle events fire a TTS announcement (voice) or text message (text) |
+| `streaming` | `off` (default) / `summary` / `full`. Per-session live progress UI for text turns. See [Slash commands → /streaming](/components/slash-commands#streaming-live-progress) |
+| `reactivity` | `strict` (default) / `loose` / `chatty`. How this bot reacts to OTHER bots in the channel. See [multi-bot](/components/multi-bot) |
+| `channelId` | For text sessions only: the Discord channel id this session is bound to. Set on auto-spawn so the bot can auto-resume the same session on the next message after a restart |
 
 All optional fields are omitted from the JSON when unset — sessions migrate forward cleanly from earlier schema versions.
 

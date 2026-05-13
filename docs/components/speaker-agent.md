@@ -8,15 +8,44 @@ The speaker agent owns the call. It transcribes the user's audio (via STT), thin
 
 ## Backends
 
-Three backends ship today, all behind the same `AgentBackend` interface:
+Ten backends ship today, all behind the same `AgentBackend` interface. Switch between them at runtime with `/backend name:<x>`.
 
-| Backend | `AGENT_BACKEND=` | Auth | Latency | Cost |
-| --- | --- | --- | --- | --- |
-| Claude Code CLI | `claude-code` | Existing `claude` login | ~5-8s/turn (CLI startup) | Standard Claude Code billing |
-| Codex CLI | `codex` | Existing `codex` login | ~5-8s/turn | Standard ChatGPT/Codex billing |
-| Anthropic API | `anthropic-api` | `ANTHROPIC_API_KEY` | ~0.5-1.5s/turn | Direct API |
+### CLI agents (7)
 
-All three accept a `--model` (e.g. `haiku`) and a system prompt. The `claude-code` backend additionally pipes through `--allowedTools` and `--mcp-config`.
+| Backend | `AGENT_BACKEND=` | Auth | Notes |
+| --- | --- | --- | --- |
+| Claude Code | `claude-code` | Existing `claude` login | Subscription tier. Streams `tool_use` / `tool_result` for `/streaming`. Owns the MCP integration. |
+| Codex | `codex` | Existing `codex` login | OpenAI's CLI agent. Assigns its own thread UUID on first turn. |
+| Aider | `aider-cli` | Env vars per [config](/config#cli-agent-backends) | `aider --message ... --no-stream --yes-always`. Per-cwd history in `.aider.chat.history.md`. |
+| Gemini CLI | `gemini-cli` | Google CLI login | `gemini -p ... --output-format json`. Token usage extracted from JSON. |
+| OpenCode | `opencode-cli` | OpenCode config | `opencode run --session <id> --format json`. Native session-resume. |
+| Crush | `crush-cli` | Crush config | `crush run` from charmbracelet. Optional `--yolo` skips permission prompts. |
+| Amp | `amp-cli` | Sourcegraph auth | `amp -x` (execute). Prompt piped via stdin. Optional in-prompt `@T-<thread>` resume. |
+
+### HTTP APIs (3)
+
+| Backend | `AGENT_BACKEND=` | Auth | Coverage |
+| --- | --- | --- | --- |
+| Anthropic API | `anthropic-api` | `ANTHROPIC_API_KEY` | Direct API; in-memory history per session |
+| OpenAI-compatible | `openai-compat` | `OPENAI_COMPAT_*` | One adapter, ~10 providers via base-URL config: OpenAI, Groq, Together, Fireworks, DeepSeek, OpenRouter, LiteLLM, Ollama, LM Studio, vLLM |
+| Gemini API (native) | `gemini-api` | `GEMINI_API_KEY` | Google's `generativelanguage.googleapis.com` — native schema, not the OpenAI shim |
+
+All ten accept `--model`/`model:` and a system prompt. `claude-code` additionally pipes through `--allowedTools` and `--mcp-config`. The CLI-agent backends share a `BaseCliBackend` (detached spawn, process-registry tracking, group-kill cancel, turn timeout); HTTP backends maintain in-memory `history: Turn[]`.
+
+### Plug-in registry
+
+Backends self-register at module load:
+
+```ts
+import { registerBackend } from "@papercup/bot/agent/backend";
+registerBackend("my-thing", () => new MyBackend());
+```
+
+Once registered, the new backend shows up in `/backend`'s dropdown, `listBackends()`, and `AGENT_BACKEND=` env values. Built-ins do this from the bottom of each `backend-*.ts` file; third parties can add their own without touching papercup's source.
+
+### Model catalog
+
+`agent/model-catalog.ts` keeps a static map of `model id → backend candidates` (e.g. `claude-opus-4-7 → ["claude-code","anthropic-api"]`) and refreshes live from each provider's `/models` endpoint when API keys are set. `/models` and `/models action:refresh` expose this to the operator.
 
 ## Tools
 

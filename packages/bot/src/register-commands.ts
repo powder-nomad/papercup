@@ -207,6 +207,90 @@ const commands = [
         .addChoices({ name: "on", value: "on" }, { name: "off", value: "off" }),
     )
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName("streaming")
+    .setDescription("Show or set live progress streaming for this text session")
+    .addStringOption((o) =>
+      o
+        .setName("mode")
+        .setDescription("Off, summary (one sticky message), or full (reserved)")
+        .setRequired(false)
+        .addChoices(
+          { name: "off", value: "off" },
+          { name: "summary (sticky, latest activity)", value: "summary" },
+          { name: "full (sticky, last 8 events scrolling)", value: "full" },
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("backend")
+    .setDescription("Show or switch the agent backend for this session")
+    .addStringOption((o) =>
+      o
+        .setName("name")
+        .setDescription("Backend to switch to. Omit to show current + list.")
+        .setRequired(false)
+        .addChoices(
+          { name: "claude-code (CLI agent)", value: "claude-code" },
+          { name: "codex (CLI agent)", value: "codex" },
+          { name: "aider-cli", value: "aider-cli" },
+          { name: "gemini-cli", value: "gemini-cli" },
+          { name: "opencode-cli", value: "opencode-cli" },
+          { name: "crush-cli", value: "crush-cli" },
+          { name: "amp-cli", value: "amp-cli" },
+          { name: "anthropic-api (HTTP)", value: "anthropic-api" },
+          { name: "openai-compat (HTTP)", value: "openai-compat" },
+          { name: "gemini-api (HTTP)", value: "gemini-api" },
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("models")
+    .setDescription("List known models and which backend(s) can run each")
+    .addStringOption((o) =>
+      o
+        .setName("action")
+        .setDescription("'list' (default) or 'refresh' (re-fetch from provider APIs)")
+        .setRequired(false)
+        .addChoices(
+          { name: "list", value: "list" },
+          { name: "refresh (re-fetch live)", value: "refresh" },
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("reactivity")
+    .setDescription("Show or set how this bot reacts to other bots' messages")
+    .addStringOption((o) =>
+      o
+        .setName("mode")
+        .setDescription("Reactivity to OTHER bots. Human messages are unaffected.")
+        .setRequired(false)
+        .addChoices(
+          { name: "strict (only respond to other bots when @-mentioned)", value: "strict" },
+          { name: "loose (respond to other bots without @-mention)", value: "loose" },
+          { name: "chatty (reserved — same as loose today)", value: "chatty" },
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("budget")
+    .setDescription("Show today's token + USD usage; optionally set a daily cap")
+    .addNumberOption((o) =>
+      o
+        .setName("set_usd")
+        .setDescription("Set a new daily budget in USD (e.g. 10). 0 disables the cap.")
+        .setRequired(false),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("announce")
+    .setDescription("Post this bot's roster announcement in the configured #roster channel")
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName("refresh-roster")
+    .setDescription("Re-scrape the #roster channel to refresh the in-memory roster")
+    .toJSON(),
 ];
 
 const rest = new REST({ version: "10" }).setToken(token);
