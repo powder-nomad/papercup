@@ -148,16 +148,25 @@ function getSessionReactivity(msg: Message): SessionReactivity {
   return "strict";
 }
 
+/**
+ * Set the channel + owner context the `present_options` MCP tool reads from
+ * during this respond() call. Used in any text-mode turn so the model can
+ * ask via Discord buttons when it needs to (previously gated on plan-mode
+ * only; the same dispatcher now serves AskUserQuestion-style asks in
+ * regular text turns too). Voice mode doesn't get context because TTS can't
+ * render buttons; the underlying tool isn't in the voice-mode allowlist
+ * either.
+ */
 async function withPlanContext<T>(
   session: Session,
   channelId: string,
   ownerUserId: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  if (session.permissionMode !== "plan") return fn();
+  if (session.mode !== "text") return fn();
   if (currentPlanContext) {
     console.warn(
-      "[plan-mode] another plan-mode turn is in flight; new context overwrites the previous (single-user MVP)",
+      "[plan-context] another text turn is in flight; new context overwrites the previous (single-user MVP)",
     );
   }
   currentPlanContext = { channelId, ownerUserId };

@@ -89,18 +89,21 @@ export class ClaudeCodeBackend implements AgentBackend {
     const papercupTools = mcpUrl
       ? "mcp__papercup__spawn_extension mcp__papercup__check_extension mcp__papercup__list_extensions"
       : "";
-    // Plan-mode-only tool: present_options runs an interactive multiple-choice
-    // interview via Discord buttons. Gated on permissionMode so it's invisible
-    // (and unallowed) outside plan mode.
-    const planModeTools =
-      mcpUrl && this.opts.permissionMode === "plan"
+    // present_options: interactive multiple-choice interview via Discord
+    // buttons. Available in any text-mode turn so the model can ask the user
+    // without falling back to Claude Code's built-in AskUserQuestion (which
+    // doesn't work in `claude -p` print mode — it hangs / errors out, leaving
+    // the user with a "(empty)" reply). Gated on text mode because voice mode
+    // can't render buttons.
+    const askTools =
+      mcpUrl && this.opts.mode === "text"
         ? "mcp__papercup__present_options"
         : "";
     // /mcp enable adds these per-session — turns into mcp__<name>__* glob.
     const extraMcpTools = (this.opts.allowedMcps ?? [])
       .map((name) => `mcp__${name}__*`)
       .join(" ");
-    const allowedTools = [baseTools, papercupTools, planModeTools, extraMcpTools]
+    const allowedTools = [baseTools, papercupTools, askTools, extraMcpTools]
       .filter(Boolean)
       .join(" ");
 
@@ -108,6 +111,14 @@ export class ClaudeCodeBackend implements AgentBackend {
       "-p", userText,
       "--allowedTools", allowedTools,
     ];
+    // Block the built-in AskUserQuestion in text mode — it requires the
+    // interactive TUI to render its prompt UI, and `claude -p` (print mode,
+    // which is what papercup uses) can't service it. Without this, the
+    // model occasionally picks AskUserQuestion → errors out → returns empty.
+    // present_options is the working replacement.
+    if (this.opts.mode === "text") {
+      args.push("--disallowedTools", "AskUserQuestion");
+    }
     if (streaming) {
       // stream-json + verbose: emits one NDJSON event per intermediate step
       // (assistant message blocks, tool_use/tool_result) plus a final `result`

@@ -172,15 +172,16 @@ export class ExtensionMcpServer {
         {
           description:
             "Ask the user a multiple-choice question and wait for their answer. " +
-            "Use this in plan mode to interview the user before producing the plan. " +
+            "USE THIS INSTEAD OF AskUserQuestion (which is unavailable in this environment — calling AskUserQuestion will fail). " +
+            "Use it whenever you need a decision or clarification from the user before continuing — both during plan-mode interviews AND in regular text turns when you'd otherwise be guessing. " +
             "Provide a short, specific question and 2–4 short candidate answers. " +
             "The tool blocks until the user clicks one. " +
             "Possible return values: " +
             "(a) one of the strings you provided in `options` — they picked it; " +
-            "(b) any other free-text — they picked 'Other...' and typed; " +
+            "(b) any other free-text — they picked 'Other...' and typed their answer; " +
             "(c) the literal string '__USER_WANTS_TO_DISCUSS__' (optionally followed by a newline + their opening message) — " +
-            "they want to drop the interview and have a free-form conversation: stop calling this tool and engage in chat; " +
-            "(d) the literal string '__SKIP_TO_PLAN__' — they want you to stop asking and produce the final plan now with whatever you already know.",
+            "they want to drop the multi-choice flow and have a free-form conversation: stop calling this tool and engage in chat; " +
+            "(d) the literal string '__SKIP_TO_PLAN__' — they want you to stop asking and produce the final answer/plan now with whatever you already know.",
           inputSchema: {
             question: z.string().min(1).describe("The question to ask. Keep it short and specific."),
             options: z
