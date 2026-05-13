@@ -1,6 +1,6 @@
 # 슬래시 명령
 
-Discord 슬래시 명령은 런타임에 Papercup을 조작하는 방법입니다. 총 12개. 봇은 재시작 시마다 길드별로 명령을 등록합니다 (스키마 변경 후에는 `npm run -w @papercup/bot register`).
+Discord 슬래시 명령은 런타임에 Papercup을 조작하는 방법입니다. 총 19개. 봇은 재시작 시마다 길드별로 명령을 등록합니다 (스키마 변경 후에는 `npm run -w @papercup/bot register`).
 
 ## 빠른 참조
 
@@ -9,7 +9,9 @@ Discord 슬래시 명령은 런타임에 Papercup을 조작하는 방법입니�
 | `/pickup` | 세션 시작 (음성 또는 텍스트). `name`, `model`, `effort`, `permission-mode` 옵션 |
 | `/hangup` | 활성 컨테이너 종료 (음성 라인 또는 텍스트 채팅); 세션은 `/resume`을 위해 보존 |
 | `/resume name:<x>` | 자동 모드 — 컨텍스트로부터 음성/텍스트 결정 |
+| `/cancel` | 활성 세션의 진행 중인 에이전트 프로세스 그룹에 SIGTERM |
 | `/sessions` | 최근 세션 목록 |
+| `/status` | 활성 세션의 설정 + 현재 실행 중인 백그라운드 확장 표시 |
 | `/rename name:<x>` | 현재 세션 이름 변경 |
 | `/say text:<x>` | 활성 음성 라인에 TTS로 텍스트 발화 |
 | `/bind channel:<#chan>` | (관리자) 봇을 특정 텍스트 채널에 바인딩 — 해당 채널의 모든 메시지가 봇 트리거 |
@@ -17,7 +19,15 @@ Discord 슬래시 명령은 런타임에 Papercup을 조작하는 방법입니�
 | `/model name:<x>` | 활성 세션의 에이전트 모델 핫스왑 |
 | `/effort level:<x>` | 활성 세션의 추론 노력 핫스왑 |
 | `/permissions mode:<x>` | 도구 권한 정책 핫스왑 |
+| `/backend name:<x>` | 에이전트 백엔드 전환 (claude-code, codex, gemini-cli, openai-compat 등). 대화 기록 리셋 |
+| `/models action:list\|refresh` | 알려진 모델→백엔드 매핑 표시; refresh는 제공자 API에서 재조회 |
 | `/notify state:on\|off` | 확장 완료 시 알림 토글 (TTS/텍스트) |
+| `/mcp` | 활성 세션이 호출할 수 있는 MCP 서버 도구 표시 또는 변경 |
+| `/streaming mode:off\|summary\|full` | 텍스트 모드 턴의 실시간 진행 UI |
+| `/reactivity mode:strict\|loose\|chatty` | 다른 봇들의 메시지에 어떻게 반응할지 |
+| `/budget [set_usd:<n>]` | 오늘의 USD + 토큰 사용량 표시; 일일 캡 설정/해제 가능 |
+| `/announce` | 이 봇의 구조화된 roster 항목을 `#roster` 채널에 게시 |
+| `/refresh-roster` | `#roster` 채널을 재스크랩해 로컬 roster 재구성 |
 
 ## `/pickup` — 세션 시작
 
@@ -111,3 +121,71 @@ Discord 슬래시 명령은 런타임에 Papercup을 조작하는 방법입니�
 ```
 
 `/sessions`는 최대 15개 항목을 상대 시간으로 표시. 이름은 슬러그화(소문자, 하이픈). `/rename`은 새 이름이 충돌하면 오류.
+
+## `/cancel`
+
+진행 중인 에이전트의 프로세스 그룹에 SIGTERM (claude/codex/aider 등 + 그 후손 — cloudflared, uvicorn 등). 이 채널/길드의 활성 세션에 적용. `/cancel`이 "Nothing in flight"를 반환하면 `data/process-registry.json`과 시스템 프로세스 목록을 확인하세요 — 진짜 고아 프로세스는 다음 재시작 후 부팅 리퍼가 정리.
+
+## `/status`
+
+활성 세션의 `model`, `effort`, `permissionMode`, `mode`와 봇 전체의 현재 실행 중인 백그라운드 확장 수를 보여주는 ephemeral 응답.
+
+## `/backend` — 에이전트 백엔드 전환
+
+```
+/backend                            # 현재 + 등록된 10개 백엔드 목록 표시
+/backend name:openai-compat         # 이 세션을 openai-compat로 전환
+```
+
+**대화 기록을 리셋합니다** (백엔드 간 세션 재개는 불가능 — claude-code 세션 id는 codex나 opencode에게는 의미 없음). 영구 저장되는 `session.backend` 필드는 봇 재시작 후에도 유지. [스피커 에이전트](/ko/components/speaker-agent) 참조.
+
+## `/models` — 모델 카탈로그
+
+```
+/models                  # 기본 action = list
+/models action:list      # 제공자별로 그룹화된 알려진 모델 표시
+/models action:refresh   # Anthropic, OpenAI, Gemini API에서 실시간 모델 목록 재조회
+```
+
+일반 모델의 정적 카탈로그는 봇과 함께 제공됩니다. 실시간 `refresh`는 관련 API 키 필요 (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` / `OPENAI_COMPAT_API_KEY`, `GEMINI_API_KEY`). 각 모델 항목은 실행 가능한 백엔드 목록을 표시 — 예: `claude-opus-4-7 → [claude-code, anthropic-api]`.
+
+## `/streaming` — 실시간 진행
+
+```
+/streaming                         # 활성 세션의 현재 모드 표시
+/streaming mode:off                # 기본. 최종 응답만
+/streaming mode:summary            # 단일 한 줄 sticky "🤔 Edit: foo.ts · 4 tools · 12s elapsed"
+/streaming mode:full               # sticky 메시지 + 최근 8개 이벤트 스크롤, 인접 중복 합치기
+```
+
+텍스트 모드 세션에만 적용되고 `claude-code` 백엔드 전용 (`tool_use` / `tool_result` 이벤트를 스트리밍하는 유일한 백엔드). 안티-스팸: 1.5초 편집 throttle, 5초 미만 턴은 자동 건너뜀.
+
+## `/reactivity` — 멀티봇 가드레일
+
+```
+/reactivity                        # 현재 + 봇 루프 카운터 표시
+/reactivity mode:strict            # 기본. @-멘션이 있을 때만 다른 봇에 응답
+/reactivity mode:loose             # @-멘션 없이도 다른 봇에 응답
+/reactivity mode:chatty            # 예약 — 현재는 loose와 동일
+```
+
+사람 메시지는 영향받지 않음 — 기존 바인딩-채널 / @-멘션 규칙 그대로. 봇 루프 캡(`BOT_BOT_MAX_TURNS`, 기본 3)은 사람 턴 없이 연속으로 응답한 횟수가 그 수를 초과하면 papercup을 침묵시킴. [멀티봇](/ko/components/multi-bot) 참조.
+
+## `/budget` — 비용 추적
+
+```
+/budget                            # 오늘의 USD + 토큰 + 7일 분석 표시
+/budget set_usd:10                 # 일일 캡을 $10로 설정
+/budget set_usd:0                  # 캡 비활성화
+```
+
+캡은 UTC 자정에 리셋. 예산 초과 시 사람은 명시적 "budget spent" 응답을 받고, 다른 봇은 무음 무시됨. 봇의 Discord rich-presence가 실시간으로 `46% of $10/day`를 표시. 가격은 Claude Opus/Sonnet/Haiku 4.x, GPT-5/4o/o3, Gemini 2.5 커버; 알려지지 않은 모델은 토큰만 기록.
+
+## `/announce`와 `/refresh-roster` — 인-밴드 봇 roster
+
+```
+/announce                          # 이 봇의 roster 항목을 BOT_ROSTER_CHANNEL_ID에 게시
+/refresh-roster                    # 그 채널 재스크랩 + workdir 겹침 검사
+```
+
+`BOT_ROSTER_CHANNEL_ID` 환경 변수가 필요. 안내는 구조화된 코드 블록 메시지(`papercup-roster v1`)로 bot_id, owner, workdir, reactivity, budget, fingerprint, public-key 포함. 다른 운영자들의 봇이 같은 채널을 스크랩해 서로를 발견. 아웃-오브-밴드 조정 불필요. [멀티봇](/ko/components/multi-bot) 참조.

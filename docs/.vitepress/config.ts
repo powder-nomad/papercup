@@ -96,6 +96,8 @@ const koSidebar: DefaultTheme.SidebarMulti = {
         { text: "확장 서브에이전트", link: "/ko/components/extensions" },
         { text: "세션", link: "/ko/components/sessions" },
         { text: "채널 바인딩", link: "/ko/components/channel-binding" },
+        { text: "프로세스 관리", link: "/ko/components/process-management" },
+        { text: "멀티봇 오케스트레이션", link: "/ko/components/multi-bot" },
         { text: "한국어 (및 기타 언어)", link: "/ko/components/korean" },
       ],
     },

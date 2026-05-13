@@ -158,7 +158,11 @@ brew install mecab mecab-ipadic openssl pkg-config
 | VAD | Silero | 유일한 옵션 |
 | STT | Whisper | `base` (다국어, 기본) — 99개 언어 자동 감지; `base.en` / `small` / `small.en` 사용 가능 |
 | TTS | Kokoro + MeloTTS (`auto`) | Kokoro: en/ja/zh/es/fr/hi/it/pt. MeloTTS: ko (한국어 자동 라우팅 → MeloTTS, 그 외 → Kokoro) |
-| 에이전트 | Claude Code / Codex / Anthropic API | `AGENT_BACKEND`로 전환; CLI는 기존 로그인 사용 |
+| 에이전트 | **10개 백엔드** (7개 CLI + 3개 HTTP API) | claude-code · codex · aider · gemini-cli · opencode · crush · amp · anthropic-api · openai-compat · gemini-api. 런타임에서 `/backend`로 전환. |
+| 실시간 진행 | sticky 메시지, 선택적 이벤트 로그 | 텍스트 모드 + `/streaming summary\|full`. 안티-스팸: 편집 throttle, 짧은 턴 자동 건너뜀 |
+| 예산 추적 | 일별 USD + 토큰, 일일 캡 | `BOT_DAILY_BUDGET_USD` 또는 `/budget set_usd:<n>`; 봇의 rich-presence에 현재 비율 실시간 |
+| 프로세스 관리 | detached spawn, 그룹 kill 취소, 부팅 리퍼 | 각 에이전트 턴은 `data/process-registry.json`에서 추적; 재시작 시 고아 프로세스 정리 |
+| 멀티봇 | 루프 캡, 반응성 모드, 인-밴드 roster | 여러 운영자가 한 채널에서 봇을 공동 호스팅; 캡이 봇-봇 루프 방지 |
 | 전송 | Discord 음성 + 텍스트 | `/bind`로 단일 채널 바인딩 또는 어디서든 @멘션 |
 
 자세한 내용은 **[구성요소](/ko/components/voice-pipeline)** 참조.

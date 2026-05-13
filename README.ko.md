@@ -41,7 +41,11 @@ iwr -useb https://raw.githubusercontent.com/powder-nomad/papercup/main/install.p
 | VAD | Silero | 유일한 옵션 |
 | STT | Whisper | `base`/`base.en`/`small`/`small.en`. 다국어는 `small` 기본 |
 | TTS | Kokoro + MeloTTS + XTTS-v2 | ko → MeloTTS 또는 XTTS-v2 자동 라우팅 (설정 가능); en/ja/zh/es/fr/hi/it/pt → Kokoro |
-| 에이전트 | Claude Code / Codex / Anthropic API | `AGENT_BACKEND`로 전환. CLI는 기존 로그인 사용 |
+| 에이전트 | **10개 백엔드** (7개 CLI + 3개 HTTP API) | claude-code · codex · aider · gemini-cli · opencode · crush · amp · anthropic-api · openai-compat · gemini-api. 런타임에서 `/backend`로 전환. |
+| 실시간 진행 | sticky 메시지, 선택적 이벤트 로그 | 텍스트 모드에서 `/streaming summary\|full` |
+| 예산 추적 | 일별 USD + 토큰, 하드 캡 | `BOT_DAILY_BUDGET_USD` 또는 `/budget set_usd:<n>`; 봇의 rich-presence에 현재 비율 표시 |
+| 프로세스 관리 | detached spawn, 그룹 kill 취소, 부팅 리퍼 | 각 에이전트 턴은 `data/process-registry.json`에서 추적; 재시작 시 고아 프로세스 정리 |
+| 멀티봇 | 루프 캡, 반응성 모드, 인-밴드 roster | 여러 papercup 봇을 한 채널에서 공동 호스팅; 캡이 봇-봇 루프 방지 |
 | 전송 | Discord 음성 + 텍스트 | `/bind`로 길드별 바인딩 또는 어디서든 @멘션 |
 
 ## 세 가지 배포 형태
