@@ -5,6 +5,12 @@ import type { VoiceService } from '../voice/voice-line.ts'
 /**
  * Dependencies that slash-command handlers need. The dispatcher's main
  * (`index.ts`) constructs this once and passes it to every interaction.
+ *
+ * spawnFor / killFor / isPluginOnline are deliberately function-shaped
+ * (rather than `transport: SessionTransport`) because index.ts owns the
+ * mapping from Session → transport. Handlers don't care which transport a
+ * session uses — they just ask "spawn the agent for this session" and the
+ * dispatcher picks the right one.
  */
 export type CommandContext = {
   sessions: SessionStore
@@ -13,16 +19,18 @@ export type CommandContext = {
   papercupHome: string
   /** --add-dir target for spawned claude children (default + one-shot summarizer). */
   projectDir?: string
-  /** Spawn-or-noop a claude child for the given session, applying its model/effort/permissionMode. */
+  /** Ensure the agent for the given session is running (idempotent), applying
+   *  its model/effort/permissionMode. Picks the right transport internally. */
   spawnFor: (session: Session) => void
-  /** Send SIGTERM to a session's claude child (if alive). No-op otherwise. */
+  /** SIGTERM the agent for this session (if running). No-op otherwise. */
   killFor: (sessionId: string) => boolean
-  /** True when the plugin's UDS connection for this session is currently online. */
+  /** True when the underlying agent's IPC handshake is alive. Per-turn
+   *  transport reports always-true (no handshake); channels reports the
+   *  UDS plugin handshake status. */
   isPluginOnline: (sessionId: string) => boolean
   /**
-   * Apply a permission-button click. Validates the clicker (allowlist),
-   * sends the verdict to the plugin, returns true if applied or false if
-   * the request is unknown/expired/unauthorized.
+   * Apply a permission-button click. Channels-only; per-turn sessions return
+   * false (no permission relay in per-turn mode).
    */
   resolvePermission: (
     requestId: string,

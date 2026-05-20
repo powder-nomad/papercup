@@ -19,6 +19,16 @@ import { randomUUID } from 'node:crypto'
 export type SessionEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type SessionPermissionMode = 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions' | 'plan'
 
+/**
+ * How this session is driven. See transports/types.ts for details.
+ *   - "channels"  : long-lived `claude --channels` child + MCP plugin (default)
+ *   - "per-turn"  : `claude -p` spawned per turn, mid-turn interrupt-and-merge
+ *
+ * Legacy sessions (pre-transport-refactor) get "channels" on load to preserve
+ * existing behavior.
+ */
+export type SessionTransportName = 'channels' | 'per-turn'
+
 export type Session = {
   id: string
   name: string
@@ -28,7 +38,15 @@ export type Session = {
   model?: string
   effort?: SessionEffort
   permissionMode?: SessionPermissionMode
+  /** Drives which SessionTransport the dispatcher uses. */
+  transport: SessionTransportName
+  /** Underlying agent CLI/backend. "claude-code" is the only one shipped today;
+   *  future per-turn backends (codex, gemini-cli, …) will register here. */
+  backend: string
 }
+
+const DEFAULT_TRANSPORT: SessionTransportName = 'channels'
+const DEFAULT_BACKEND = 'claude-code'
 
 type Persisted = { sessions: Session[] }
 
@@ -42,7 +60,15 @@ export class SessionStore {
     try {
       const raw = await fs.readFile(this.file, 'utf8')
       const data = JSON.parse(raw) as Persisted
-      this.sessions = Array.isArray(data.sessions) ? data.sessions : []
+      const rows = Array.isArray(data.sessions) ? data.sessions : []
+      // Migrate legacy records: pre-transport-refactor entries lack
+      // transport/backend. Default them to channels + claude-code so
+      // existing bindings keep working.
+      this.sessions = rows.map(s => ({
+        ...s,
+        transport: (s.transport as SessionTransportName) ?? DEFAULT_TRANSPORT,
+        backend: s.backend ?? DEFAULT_BACKEND,
+      }))
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         this.sessions = []
@@ -80,19 +106,47 @@ export class SessionStore {
       .sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
   }
 
-  async create(opts: { name?: string; channelId?: string }): Promise<Session> {
+  async create(opts: {
+    name?: string
+    channelId?: string
+    transport?: SessionTransportName
+    backend?: string
+  }): Promise<Session> {
     await this.load()
     const id = randomUUID()
     const baseName = opts.name ? slugify(opts.name) : autoName()
     const name = this.uniqueName(baseName)
     const now = Date.now()
     const session: Session = {
-      id, name, createdAt: now, lastActiveAt: now,
+      id,
+      name,
+      createdAt: now,
+      lastActiveAt: now,
+      transport: opts.transport ?? DEFAULT_TRANSPORT,
+      backend: opts.backend ?? DEFAULT_BACKEND,
       ...(opts.channelId ? { channelId: opts.channelId } : {}),
     }
     this.sessions.push(session)
     await this.save()
     return session
+  }
+
+  async setTransport(id: string, transport: SessionTransportName): Promise<Session | undefined> {
+    const s = this.sessions.find(s => s.id === id)
+    if (!s) return undefined
+    s.transport = transport
+    s.lastActiveAt = Date.now()
+    await this.save()
+    return s
+  }
+
+  async setBackend(id: string, backend: string): Promise<Session | undefined> {
+    const s = this.sessions.find(s => s.id === id)
+    if (!s) return undefined
+    s.backend = backend
+    s.lastActiveAt = Date.now()
+    await this.save()
+    return s
   }
 
   async touch(id: string): Promise<void> {

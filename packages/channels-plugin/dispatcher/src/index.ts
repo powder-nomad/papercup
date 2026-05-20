@@ -1,16 +1,18 @@
 /**
  * Papercup channels dispatcher — main entry.
  *
- * Phase 2 scope:
- *   - Multi-channel /bind / /unbind with persistent guildConfig + sessions
- *     stores (state/*).
- *   - Per-session claude children, lazy spawn, idle reaper.
- *   - Slash command dispatcher wired into Discord's interactionCreate.
+ * Two transports under one roof. Sessions stamped `transport: "channels"`
+ * route through the long-lived `claude --channels` driver; sessions stamped
+ * `transport: "per-turn"` route through a per-turn `claude -p` driver that
+ * supports mid-turn injection (phone-call interrupt UX).
  *
  * Wiring:
- *   discord.messageCreate     ─► sessions.findLatestForChannel(channelId) ─► uds.sendTo(session.id, event)
- *   uds.on('reply')           ─► validate frame.chat_id == session.channelId ─► discord.sendReply
- *   discord.interactionCreate ─► commands.dispatchInteraction(interaction, ctx)
+ *   discord.messageCreate     ─► sessions.findLatestForChannel(channelId)
+ *                              ─► transport.pushEvent(...)
+ *   transport.on("reply")      ─► discord.sendReply + voice.speak(if line)
+ *   transport.on("permission") ─► discord.postPermissionPrompt
+ *   transport.on("turnComplete")─► context-pressure indicator (warns at 150k/180k)
+ *   discord.interactionCreate ─► commands.dispatchInteraction
  *   timer (60s)               ─► reap sessions idle > IDLE_TIMEOUT_MS
  */
 
@@ -20,8 +22,6 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DiscordChannelClient, type InboundMessage } from './discord.ts'
-import { ClaudeChildManager } from './claude-children.ts'
-import { UdsServer } from './uds-server.ts'
 import { SessionStore, type Session } from './state/sessions.ts'
 import { GuildConfigStore } from './state/guild-config.ts'
 import { dispatchInteraction } from './commands/router.ts'
@@ -30,11 +30,14 @@ import { makeLogger } from './log.ts'
 import { bootWhisperSidecar } from './voice/sidecar.ts'
 import { VoiceService, type VoiceUtterance } from './voice/voice-line.ts'
 import { createTts, type TtsEngine } from '@papercup/voice-stack/tts'
+import { TransportRegistry } from './transports/registry.ts'
+import { ChannelsTransport } from './transports/channels.ts'
+import type { SessionTransport, ReplyEvent, PermissionRequestEvent, TurnCompleteEvent } from './transports/types.ts'
 
 const log = makeLogger('dispatcher')
 
-// Kill the claude child after this much idle time. Next inbound message
-// respawns it via --resume. 30min mirrors DESIGN.md's default.
+// Kill agent children after this much idle time. Next inbound message
+// respawns via --resume. 30min mirrors DESIGN.md's default.
 const IDLE_TIMEOUT_MS = Number(process.env.PAPERCUP_IDLE_TIMEOUT_MS ?? 30 * 60_000)
 const REAPER_INTERVAL_MS = 60_000
 // Context-pressure warning thresholds. Posted at most once per (session, tier).
@@ -44,6 +47,14 @@ const CONTEXT_DANGER_TOKENS = Number(process.env.PAPERCUP_CONTEXT_DANGER_TOKENS 
 // window is treated as not-idle by the reaper.
 const VOICE_HEARTBEAT_MS = Number(process.env.PAPERCUP_VOICE_HEARTBEAT_MS ?? 60_000)
 const TTS_ENGINE = process.env.PAPERCUP_TTS_ENGINE ?? 'auto'
+
+// Structural type for transports that support per-channel binding (channels
+// today; per-turn also exposes it for consistency). Kept internal so the
+// SessionTransport contract stays minimal.
+type ChannelsTransportLike = {
+  bindChannel?: (sessionId: string, channelId: string) => void
+  unbindChannel?: (sessionId: string) => void
+}
 
 async function main(): Promise<void> {
   const token = process.env.DISCORD_BOT_TOKEN
@@ -74,13 +85,21 @@ async function main(): Promise<void> {
   const guildConfig = new GuildConfigStore(join(papercupHome, 'guild-config.json'))
   await Promise.all([sessions.load(), guildConfig.load()])
 
-  const uds = new UdsServer(dispatcherSock)
-  const claude = new ClaudeChildManager()
+  // ---------------------------------------------------------------------------
+  // Transports
+  // ---------------------------------------------------------------------------
+  const transports = new TransportRegistry({ papercupHome, dispatcherSock, pluginDir, projectDir })
+  const channelsTransport = transports.get('channels') as ChannelsTransport
+  // Channels transport owns the UDS server; start it once before any spawn.
+  await channelsTransport.start()
+  channelsTransport.setAllowlistCheck(userId =>
+    allowedUserIds.size === 0 || allowedUserIds.has(userId),
+  )
 
   // -------------------------------------------------------------------------
-  // Voice subsystem (Phase 3). Best-effort: if the Whisper sidecar fails to
-  // start (no Python venv, model files missing, …) voice stays unavailable
-  // but text + permission relay keep working. /voice-join surfaces the error.
+  // Voice subsystem. Best-effort: if the Whisper sidecar fails to start (no
+  // venv / model files), voice stays unavailable but text + permission relay
+  // keep working. /voice-join surfaces the error.
   // -------------------------------------------------------------------------
   const stt = await bootWhisperSidecar()
   let tts: TtsEngine | null = null
@@ -113,135 +132,138 @@ async function main(): Promise<void> {
   )
 
   // ---------------------------------------------------------------------------
-  // Spawn / kill closures
+  // Per-session transport resolver. Sessions stamped transport: "per-turn"
+  // route through PerTurnTransport; everything else uses ChannelsTransport.
   // ---------------------------------------------------------------------------
+  function transportFor(session: Session): SessionTransport {
+    return transports.get(session.transport)
+  }
 
   // Track which warning tier we've already posted per session this turn-stream.
-  // Cleared when claude exits (session might be reaped and restarted fresh).
+  // Cleared when the agent exits (session might be reaped and restarted fresh).
   const contextWarnTier = new Map<string, 'warn' | 'danger'>()
 
   function spawnFor(session: Session): void {
-    if (claude.isAlive(session.id)) return
-    const resume = everSpawned.has(session.id)
+    const transport = transportFor(session)
+    if (transport.isAlive(session.id)) return
+    if (session.channelId) {
+      ;(transport as unknown as ChannelsTransportLike).bindChannel?.(session.id, session.channelId)
+    }
     contextWarnTier.delete(session.id)
-    claude.spawn({
+    transport.ensureRunning({
       sessionId: session.id,
-      pluginDir,
-      dispatcherSock,
-      papercupHome,
-      projectDir,
-      resume,
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,
-      onTurnComplete: usage => {
-        const channelId = sessions.findById(session.id)?.channelId
-        if (!channelId) return
-        if (usage.inputTokens >= CONTEXT_DANGER_TOKENS && contextWarnTier.get(session.id) !== 'danger') {
-          contextWarnTier.set(session.id, 'danger')
-          void discord.postNotice(
-            channelId,
-            `🛑 **Context danger zone** — ${(usage.inputTokens / 1000).toFixed(0)}k input tokens used. Compact or start a fresh session soon. (Compact is coming in a later phase; for now /unbind and /bind to start fresh.)`,
-          )
-        } else if (
-          usage.inputTokens >= CONTEXT_WARN_TOKENS &&
-          !contextWarnTier.has(session.id)
-        ) {
-          contextWarnTier.set(session.id, 'warn')
-          void discord.postNotice(
-            channelId,
-            `⚠️ **Context getting heavy** — ${(usage.inputTokens / 1000).toFixed(0)}k input tokens used. Consider /unbind + /bind for a fresh session if responses slow down.`,
-          )
-        }
-      },
+      resume: everSpawned.has(session.id),
     })
     everSpawned.add(session.id)
   }
 
   function killFor(sessionId: string): boolean {
     contextWarnTier.delete(sessionId)
-    return claude.kill(sessionId)
+    const session = sessions.findById(sessionId)
+    if (!session) {
+      let killed = false
+      for (const t of transports.all()) killed = t.cancel(sessionId) || killed
+      return killed
+    }
+    return transportFor(session).cancel(sessionId)
   }
 
   // ---------------------------------------------------------------------------
-  // UDS server wiring
+  // Reply / permission / turn-complete wiring (applies to ALL transports)
   // ---------------------------------------------------------------------------
-  await uds.start()
 
-  uds.on('reply', async frame => {
-    // Outbound channel guard: the session's stored channelId is the only
-    // sendable target. Prevents a forged chat_id in claude's tool call from
-    // making the bot post to arbitrary channels.
-    const session = sessions.findById(frame.session)
-    if (!session) {
-      log.warn(`reply for unknown session ${frame.session} — dropping`)
-      return
-    }
-    if (!session.channelId || frame.chat_id !== session.channelId) {
-      log.warn(
-        `reply chat_id mismatch (session=${frame.session}: session.channelId=${session.channelId}, frame.chat_id=${frame.chat_id}) — dropping`,
-      )
-      return
-    }
-    try {
-      const ids = await discord.sendReply(frame.chat_id, frame.text, frame.reply_to)
-      log.info(
-        `reply sent: session=${frame.session}, msgId=${frame.msgId}, discord_ids=${ids.join(',')}`,
-      )
-      void sessions.touch(frame.session)
-    } catch (err) {
-      log.error(`reply failed (session=${frame.session}, msgId=${frame.msgId}):`, err)
-    }
-    // Phase 3: if this session has an active voice line, also play the reply
-    // back through the voice channel. Best-effort — TTS failure is logged in
-    // voice.speak; the text post above already succeeded.
-    if (voice) {
-      const line = voice.getBySession(frame.session)
-      if (line) {
-        void voice.speak(line.guildId, frame.text).catch(err =>
-          log.warn(`voice.speak threw (session=${frame.session}):`, err),
-        )
-      }
-    }
-  })
-
-  uds.on('helloReceived', (session, pid) => {
-    log.info(`plugin online: session=${session}, pid=${pid}`)
-  })
-
-  uds.on('pluginDisconnected', session => {
-    log.warn(`plugin offline: session=${session}`)
-  })
-
-  // Permission relay: pending prompts keyed by request_id. Trimmed when the
-  // button is clicked, or when the session is killed.
   type PendingPermission = { sessionId: string; channelId: string; messageId?: string }
   const pendingPermissions = new Map<string, PendingPermission>()
 
-  uds.on('permissionRequest', async frame => {
-    const session = sessions.findById(frame.session)
-    if (!session?.channelId) {
-      log.warn(`permission_request for unbound/unknown session ${frame.session} — dropping`)
-      return
+  const onReply = (e: ReplyEvent): void => {
+    void (async () => {
+      const session = sessions.findById(e.sessionId)
+      if (!session) {
+        log.warn(`reply for unknown session ${e.sessionId} — dropping`)
+        return
+      }
+      if (!session.channelId || e.channelId !== session.channelId) {
+        log.warn(
+          `reply chat_id mismatch (session=${e.sessionId}: session.channelId=${session.channelId}, frame.chat_id=${e.channelId}) — dropping`,
+        )
+        return
+      }
+      try {
+        const ids = await discord.sendReply(e.channelId, e.text, e.replyTo)
+        log.info(
+          `reply sent: session=${e.sessionId}, msgId=${e.msgId}, transport=${session.transport}, discord_ids=${ids.join(',')}`,
+        )
+        void sessions.touch(e.sessionId)
+      } catch (err) {
+        log.error(`reply failed (session=${e.sessionId}, msgId=${e.msgId}):`, err)
+      }
+      if (voice) {
+        const line = voice.getBySession(e.sessionId)
+        if (line) {
+          void voice.speak(line.guildId, e.text).catch(err =>
+            log.warn(`voice.speak threw (session=${e.sessionId}):`, err),
+          )
+        }
+      }
+    })()
+  }
+
+  const onPermissionRequest = (e: PermissionRequestEvent): void => {
+    void (async () => {
+      const session = sessions.findById(e.sessionId)
+      if (!session?.channelId) {
+        log.warn(`permission_request for unbound/unknown session ${e.sessionId} — dropping`)
+        return
+      }
+      pendingPermissions.set(e.requestId, {
+        sessionId: e.sessionId,
+        channelId: session.channelId,
+      })
+      const messageId = await discord.postPermissionPrompt(
+        session.channelId,
+        e.requestId,
+        e.toolName,
+        e.description || e.inputPreview || '(no details)',
+      )
+      const pending = pendingPermissions.get(e.requestId)
+      if (pending && messageId) {
+        pending.messageId = messageId
+        if (session.transport === 'channels') {
+          channelsTransport.setPermissionMessageId(e.requestId, messageId)
+        }
+      }
+      log.info(
+        `permission_request: session=${e.sessionId}, tool=${e.toolName}, request_id=${e.requestId}`,
+      )
+    })()
+  }
+
+  const onTurnComplete = (e: TurnCompleteEvent): void => {
+    const channelId = sessions.findById(e.sessionId)?.channelId
+    if (!channelId) return
+    if (e.usage.inputTokens >= CONTEXT_DANGER_TOKENS && contextWarnTier.get(e.sessionId) !== 'danger') {
+      contextWarnTier.set(e.sessionId, 'danger')
+      void discord.postNotice(
+        channelId,
+        `🛑 **Context danger zone** — ${(e.usage.inputTokens / 1000).toFixed(0)}k input tokens used. Compact or start a fresh session soon.`,
+      )
+    } else if (e.usage.inputTokens >= CONTEXT_WARN_TOKENS && !contextWarnTier.has(e.sessionId)) {
+      contextWarnTier.set(e.sessionId, 'warn')
+      void discord.postNotice(
+        channelId,
+        `⚠️ **Context getting heavy** — ${(e.usage.inputTokens / 1000).toFixed(0)}k input tokens used. Consider /compact if responses slow down.`,
+      )
     }
-    pendingPermissions.set(frame.request_id, {
-      sessionId: frame.session,
-      channelId: session.channelId,
-    })
-    const messageId = await discord.postPermissionPrompt(
-      session.channelId,
-      frame.request_id,
-      frame.tool_name,
-      frame.description || frame.input_preview || '(no details)',
-    )
-    const pending = pendingPermissions.get(frame.request_id)
-    if (pending && messageId) {
-      pending.messageId = messageId
-    }
-    log.info(
-      `permission_request: session=${frame.session}, tool=${frame.tool_name}, request_id=${frame.request_id}`,
-    )
-  })
+  }
+
+  for (const t of transports.all()) {
+    t.on('reply', onReply)
+    t.on('permissionRequest', onPermissionRequest)
+    t.on('turnComplete', onTurnComplete)
+  }
 
   function resolvePermission(
     requestId: string,
@@ -250,24 +272,12 @@ async function main(): Promise<void> {
   ): boolean {
     const pending = pendingPermissions.get(requestId)
     if (!pending) return false
-    // Allowlist check: if PAPERCUP_ALLOWED_USERS is set, only those users can
-    // approve. Empty set = open (matches inbound-message behavior).
-    if (allowedUserIds.size > 0 && !allowedUserIds.has(clickerUserId)) return false
-    pendingPermissions.delete(requestId)
-    const ok = uds.sendTo(pending.sessionId, {
-      type: 'permission_verdict',
-      session: pending.sessionId,
-      request_id: requestId,
-      behavior,
-    })
-    if (!ok) {
-      log.warn(`verdict send failed: plugin not connected for session ${pending.sessionId}`)
-      return false
-    }
-    log.info(
-      `permission ${behavior}: session=${pending.sessionId}, request_id=${requestId}, by=${clickerUserId}`,
-    )
-    return true
+    const session = sessions.findById(pending.sessionId)
+    if (!session) return false
+    const transport = transportFor(session)
+    const ok = transport.resolvePermission(requestId, behavior, clickerUserId)
+    if (ok) pendingPermissions.delete(requestId)
+    return ok
   }
 
   // ---------------------------------------------------------------------------
@@ -280,7 +290,11 @@ async function main(): Promise<void> {
     projectDir,
     spawnFor,
     killFor,
-    isPluginOnline: id => uds.isConnected(id),
+    isPluginOnline: id => {
+      const s = sessions.findById(id)
+      if (!s) return false
+      return transportFor(s).isPluginOnline(id)
+    },
     resolvePermission,
     voice,
   }
@@ -307,10 +321,11 @@ async function main(): Promise<void> {
   }
 
   /**
-   * Voice utterance → UDS event. Mirrors the text-inbound path
-   * (handleDiscordInbound) so claude sees voice as just another channel
-   * source. meta.source="voice" lets the plugin's instructions tell claude
-   * to keep replies short for TTS playback.
+   * Voice utterance → transport event. Voice and text share the same session,
+   * so the agent sees voice as just another channel source. meta.source="voice"
+   * lets the channels plugin's instructions tell claude to keep replies short
+   * for TTS playback; the per-turn transport surfaces the same meta in the
+   * prompt.
    */
   function handleVoiceUtterance(u: VoiceUtterance): void {
     const session = sessions.findById(u.sessionId)
@@ -332,31 +347,27 @@ async function main(): Promise<void> {
       source: 'voice',
     }
     if (u.lang) meta.lang = u.lang
-    const ok = uds.sendTo(u.sessionId, {
-      type: 'event',
-      session: u.sessionId,
-      chat_id: u.textChannelId,
+    const ok = transportFor(session).pushEvent({
+      sessionId: u.sessionId,
+      channelId: u.textChannelId,
+      source: 'voice',
       content: u.text,
       meta,
     })
     if (!ok) {
-      log.warn(`voice utterance: plugin offline for session=${u.sessionId}; dropping transcript`)
+      log.warn(`voice utterance: transport offline for session=${u.sessionId}; dropping transcript`)
       return
     }
-    // Echo the transcript into the bound text channel so the user can scroll back.
     void discord.postNotice(u.textChannelId, `🎙️ ${u.text}`)
   }
 
   function handleDiscordInbound(msg: InboundMessage): void {
     void (async () => {
       if (!msg.guildId) return
-      // discord.ts already enforced isBound, but recheck in case of races.
       if (!guildConfig.isBound(msg.guildId, msg.channelId)) return
 
       let session = sessions.findLatestForChannel(msg.channelId)
       if (!session) {
-        // /bind was used but somehow no session exists. Auto-create so the
-        // user doesn't get stuck.
         session = await sessions.create({ channelId: msg.channelId })
         log.info(`auto-created session ${session.name} for channel ${msg.channelId}`)
       }
@@ -364,11 +375,6 @@ async function main(): Promise<void> {
       spawnFor(session)
       void sessions.touch(session.id)
 
-      // Encode attachments into meta. Format mirrors Anthropic's discord
-      // plugin pattern but adds a `path` field since we pre-download:
-      //   attachment_count: "N"
-      //   attachments: "name|type|size|path; name2|type2|size2|path2"
-      // The plugin's `instructions` block teaches claude this format.
       const attMeta: Record<string, string> = {}
       if (msg.attachments.length > 0) {
         attMeta.attachment_count = String(msg.attachments.length)
@@ -377,10 +383,10 @@ async function main(): Promise<void> {
           .join('; ')
       }
 
-      const ok = uds.sendTo(session.id, {
-        type: 'event',
-        session: session.id,
-        chat_id: msg.channelId,
+      const ok = transportFor(session).pushEvent({
+        sessionId: session.id,
+        channelId: msg.channelId,
+        source: 'text',
         content: msg.content,
         meta: {
           message_id: msg.messageId,
@@ -389,11 +395,12 @@ async function main(): Promise<void> {
           ts: msg.ts,
           ...attMeta,
         },
+        messageId: msg.messageId,
       })
       if (!ok) {
         log.warn(
-          `plugin not yet connected for session=${session.id}; dropping message ${msg.messageId}. ` +
-          `(Plugin handshake takes ~1-2s after spawn — ask the user to resend.)`,
+          `transport not yet ready for session=${session.id}; dropping message ${msg.messageId}. ` +
+          `(Channels plugin handshake takes ~1-2s after spawn — ask the user to resend.)`,
         )
       }
     })().catch(err => log.error('inbound handler:', err))
@@ -405,20 +412,19 @@ async function main(): Promise<void> {
   const reaperHandle = setInterval(() => {
     const now = Date.now()
     for (const s of sessions.list()) {
-      if (!claude.isAlive(s.id)) continue
+      const transport = transportFor(s)
+      if (!transport.isAlive(s.id)) continue
       const idle = now - s.lastActiveAt
       if (idle <= IDLE_TIMEOUT_MS) continue
-      // Phase 3: a session with an active voice connection (or recent audio
-      // frames) is not idle from the user's perspective — they may have been
+      // A session with an active voice connection (or recent audio frames)
+      // is not idle from the user's perspective — they may have been
       // listening, or the line may be paused while we synthesise.
       if (voice?.isSessionConnected(s.id)) {
         const audioAge = voice.lastAudioAgeMs(s.id)
         if (audioAge !== undefined && audioAge <= VOICE_HEARTBEAT_MS) continue
-        // Voice still attached but no recent audio: keep alive anyway so
-        // the user can speak without waiting for a respawn.
         continue
       }
-      log.info(`reaper: killing idle session ${s.name} (${Math.floor(idle / 60_000)}m)`)
+      log.info(`reaper: killing idle session ${s.name} (${Math.floor(idle / 60_000)}m, transport=${s.transport})`)
       killFor(s.id)
     }
   }, REAPER_INTERVAL_MS)
@@ -436,9 +442,8 @@ async function main(): Promise<void> {
     try { voice?.shutdown() } catch (err) { log.warn('voice shutdown err:', err) }
     try { tts?.stop() } catch (err) { log.warn('tts stop err:', err) }
     try { stt?.stop() } catch (err) { log.warn('stt stop err:', err) }
-    try { await uds.stop() } catch (err) { log.warn('uds stop err:', err) }
     try { await discord.stop() } catch (err) { log.warn('discord stop err:', err) }
-    claude.killAll()
+    try { await transports.shutdown() } catch (err) { log.warn('transports shutdown err:', err) }
     setTimeout(() => process.exit(0), 1000).unref()
   }
   process.on('SIGINT', () => shutdown('SIGINT'))
