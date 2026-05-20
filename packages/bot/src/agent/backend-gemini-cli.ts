@@ -23,6 +23,8 @@ import type { AgentReply, RespondOptions } from "./backend.js";
  */
 export class GeminiCliBackend extends BaseCliBackend {
   async respond(userText: string, _respondOpts: RespondOptions = {}): Promise<AgentReply> {
+    if (!this.sessionId) throw new Error("GeminiCliBackend: start() not called");
+
     const binary = process.env.GEMINI_BINARY ?? "gemini";
     const cwd = process.env.GEMINI_WORKDIR ?? process.cwd();
     const model = this.opts.model ?? process.env.GEMINI_DEFAULT_MODEL;
@@ -36,6 +38,24 @@ export class GeminiCliBackend extends BaseCliBackend {
       ...(model ? ["-m", model] : []),
       ...extra,
     ];
+
+    if (this.opts.permissionMode === "plan") {
+      args.push("--approval-mode", "plan");
+    } else if (this.opts.permissionMode === "bypassPermissions") {
+      args.push("--yolo");
+    } else if (this.opts.permissionMode === "auto" || this.opts.permissionMode === "acceptEdits") {
+      args.push("--approval-mode", "auto_edit");
+    } else {
+      // Default for headless is usually YOLO/bypass in these bots, but
+      // we'll follow the opt-in permissionMode if provided.
+      if (!this.opts.permissionMode) args.push("--yolo");
+    }
+
+    if (this.firstTurn) {
+      args.push("--session-id", this.sessionId);
+    } else {
+      args.push("--resume", this.sessionId);
+    }
 
     const { stdout, elapsedMs } = await this.runChild({
       binary,
@@ -51,21 +71,33 @@ export class GeminiCliBackend extends BaseCliBackend {
       const parsed = JSON.parse(stdout) as {
         response?: string;
         text?: string;
-        usage?: {
-          input_tokens?: number;
-          output_tokens?: number;
-          prompt_token_count?: number;
-          candidates_token_count?: number;
+        stats?: {
+          models?: Record<string, {
+            tokens?: {
+              input?: number;
+              prompt?: number;
+              candidates?: number;
+              total?: number;
+            }
+          }>
         };
       };
       text = String(parsed.response ?? parsed.text ?? stdout).trim();
-      inputTokens = Number(parsed.usage?.input_tokens ?? parsed.usage?.prompt_token_count ?? 0);
-      outputTokens = Number(parsed.usage?.output_tokens ?? parsed.usage?.candidates_token_count ?? 0);
+
+      // Extract tokens from stats.models. Sum all models if multiple were used
+      // (e.g. utility_router + main).
+      if (parsed.stats?.models) {
+        for (const m of Object.values(parsed.stats.models)) {
+          inputTokens += Number(m.tokens?.input ?? m.tokens?.prompt ?? 0);
+          outputTokens += Number(m.tokens?.candidates ?? 0);
+        }
+      }
     } catch {
       // Fall back to raw stdout as text; gemini may have returned plain text
       // if the json flag wasn't recognized by an older version.
     }
 
+    this.firstTurn = false;
     return { text, inputTokens, outputTokens, elapsedMs };
   }
 }
