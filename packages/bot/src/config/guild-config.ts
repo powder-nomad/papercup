@@ -2,8 +2,16 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 export type GuildSettings = {
-  /** Channel ID the bot is bound to. Every message there is a prompt. */
+  /**
+   * Legacy singleton — kept for backward-compat on read. New code uses
+   * `boundChannels`. Migrated into `boundChannels` on first load.
+   */
   boundTextChannelId?: string;
+  /**
+   * Channels the bot listens to without requiring @-mention. Each channel
+   * is paired with a session via Session.channelId — see SessionStore.
+   */
+  boundChannels?: string[];
 };
 
 type Persisted = {
@@ -13,8 +21,9 @@ type Persisted = {
 const DEFAULT_PATH = path.join(process.cwd(), "data", "guild-config.json");
 
 /**
- * Per-guild runtime settings — bound channel, etc. Edited via slash commands
- * (admin-only). Persists to disk so settings survive bot restarts.
+ * Per-guild runtime settings — bound channels, etc. Edited via slash
+ * commands (admin-only). Persists to disk so settings survive bot
+ * restarts.
  */
 export class GuildConfigStore {
   private guilds: Record<string, GuildSettings> = {};
@@ -39,7 +48,17 @@ export class GuildConfigStore {
         this.guilds = {};
       }
     }
+    // Migrate legacy boundTextChannelId → boundChannels on first load.
+    let mutated = false;
+    for (const g of Object.values(this.guilds)) {
+      if (g.boundTextChannelId && !g.boundChannels?.includes(g.boundTextChannelId)) {
+        g.boundChannels = [...(g.boundChannels ?? []), g.boundTextChannelId];
+        delete g.boundTextChannelId;
+        mutated = true;
+      }
+    }
     this.loaded = true;
+    if (mutated) await this.save();
   }
 
   private async save(): Promise<void> {
@@ -53,14 +72,29 @@ export class GuildConfigStore {
     return this.guilds[guildId] ?? {};
   }
 
-  async setBoundChannel(guildId: string, channelId: string): Promise<void> {
-    this.guilds[guildId] = { ...this.guilds[guildId], boundTextChannelId: channelId };
+  getBoundChannels(guildId: string): string[] {
+    return this.guilds[guildId]?.boundChannels ?? [];
+  }
+
+  isBound(guildId: string, channelId: string): boolean {
+    return this.getBoundChannels(guildId).includes(channelId);
+  }
+
+  async addBoundChannel(guildId: string, channelId: string): Promise<void> {
+    const existing = this.guilds[guildId] ?? {};
+    const list = new Set(existing.boundChannels ?? []);
+    if (list.has(channelId)) return;
+    list.add(channelId);
+    this.guilds[guildId] = { ...existing, boundChannels: [...list] };
     await this.save();
   }
 
-  async clearBoundChannel(guildId: string): Promise<void> {
-    if (!this.guilds[guildId]) return;
-    delete this.guilds[guildId].boundTextChannelId;
+  async removeBoundChannel(guildId: string, channelId: string): Promise<void> {
+    const existing = this.guilds[guildId];
+    if (!existing?.boundChannels) return;
+    const next = existing.boundChannels.filter((id) => id !== channelId);
+    if (next.length === existing.boundChannels.length) return;
+    this.guilds[guildId] = { ...existing, boundChannels: next };
     await this.save();
   }
 }

@@ -3,7 +3,6 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
-  ChannelType,
   PermissionFlagsBits,
 } from "discord.js";
 
@@ -111,19 +110,19 @@ const commands = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName("bind")
-    .setDescription("(Admin) Bind the bot to a text channel — every message there becomes a prompt")
+    .setDescription("(Admin) Bind THIS channel to a session — every message here routes to that session")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addChannelOption((o) =>
+    .addStringOption((o) =>
       o
-        .setName("channel")
-        .setDescription("Channel to bind")
+        .setName("session")
+        .setDescription("Session name to bind to this channel")
         .setRequired(true)
-        .addChannelTypes(ChannelType.GuildText),
+        .setMaxLength(60),
     )
     .toJSON(),
   new SlashCommandBuilder()
     .setName("unbind")
-    .setDescription("(Admin) Unbind the bot — falls back to @mention triggers across all channels")
+    .setDescription("(Admin) Unbind THIS channel — bot reverts to @mention triggers here")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .toJSON(),
   new SlashCommandBuilder()
