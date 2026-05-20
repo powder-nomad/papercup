@@ -2,7 +2,7 @@
   "name": "papercup-monorepo",
   "version": "0.1.0",
   "private": true,
-  "description": "Voice interface to Claude Code via Discord — local voice stack (Silero+Whisper+Kokoro), Claude Code/Codex/Anthropic agent backends, extension subagents in sandboxes. Monorepo with voice-stack (shared), bot (Discord bot + CC plugin), and openclaw-plugin (OpenClaw integration).",
+  "description": "Discord bot with one frontend, two transports (long-lived `claude --channels` and per-turn `<cli> -p` with mid-turn interrupts), and 7 pluggable CLI backends (claude-code, codex, gemini-cli, aider, opencode, crush, amp). Local voice stack (Silero+Whisper+Kokoro). Monorepo: voice-stack (shared), channels-plugin (the unified dispatcher), openclaw-plugin. packages/bot/ is deprecated — kept as a stub.",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -13,10 +13,10 @@
     "packages/openclaw-plugin"
   ],
   "scripts": {
-    "start": "npm run --workspace=@papercup/bot start",
-    "register": "npm run --workspace=@papercup/bot register",
-    "dev": "npm run --workspace=@papercup/bot dev",
-    "typecheck": "npm run --workspaces --if-present typecheck",
+    "start": "cd packages/channels-plugin/dispatcher && npm start",
+    "register": "cd packages/channels-plugin/dispatcher && npm run register",
+    "dev": "cd packages/channels-plugin/dispatcher && npm run dev",
+    "typecheck": "npm run --workspaces --if-present typecheck && cd packages/channels-plugin/dispatcher && npx tsc --noEmit",
     "download-models": "bash packages/voice-stack/scripts/download-models.sh",
     "setup-venv": "python3 -m venv packages/voice-stack/sidecar/.venv && packages/voice-stack/sidecar/.venv/bin/pip install -r packages/voice-stack/sidecar/requirements.txt"
   },

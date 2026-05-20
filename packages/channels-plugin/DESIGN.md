@@ -12,10 +12,10 @@ subsystem, session store, and reply path. Sessions stamp which one they
 want via the `transport: "channels" | "per-turn"` field; the dispatcher
 routes events to the right driver.
 
-The existing `packages/bot/` is the legacy multi-backend bot (codex,
-aider, gemini-cli, etc.) and remains its own thing until those backends
-are lifted into the new transport-pluggable dispatcher (see "Future"
-below).
+All seven CLI backends from the legacy `packages/bot/` (claude-code,
+codex, gemini-cli, aider, opencode, crush, amp) have been lifted into
+`src/transports/backends/`. The bot package is retired (its `bin/papercup`
+is now a forwarding stub).
 
 ## Why a new package, not a refactor
 

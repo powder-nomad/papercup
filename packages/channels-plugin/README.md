@@ -109,7 +109,9 @@ claude children. Use the slash commands to manage bindings:
 | `/bind` (in a channel) | Bind this channel to a new (or existing) claude session. Spawns the child. |
 | `/bind name:foo` | Bind this channel to existing session `foo`. |
 | `/bind transport:per-turn` | Bind a new session using the per-turn transport (phone-call interrupts). Omit `transport:` for the default `channels`. |
+| `/bind backend:<…>` | Pick the agent CLI: `claude-code` (default), `codex`, `gemini-cli`, `aider-cli`, `opencode-cli`, `crush-cli`, `amp-cli`. Non-claude backends auto-pick `transport:per-turn`. |
 | `/transport mode:<channels\|per-turn>` | Switch this channel's bound session to a different transport. Kills + respawns. |
+| `/backend name:<…>` | Switch this channel's bound session to a different backend CLI. Kills + respawns. Channels-transport sessions are pinned to `claude-code`. |
 | `/unbind` | Kill this channel's claude child and drop the binding. Session metadata kept. |
 | `/resume name:foo` | In this bound channel, switch to session `foo` (create if missing). Mirrors `claude --resume <name>`. Kills the previously-bound session's child; transcripts persist on disk so a future `/resume name:<prev>` brings it back. |
 | `/sessions` | List all sessions, idle time, model/effort/perm overrides. 🟢 = plugin connected. |
