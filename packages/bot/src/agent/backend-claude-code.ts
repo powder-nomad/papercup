@@ -111,6 +111,14 @@ export class ClaudeCodeBackend implements AgentBackend {
       "-p", userText,
       "--allowedTools", allowedTools,
     ];
+    // Token-economy: the user's enabled plugins (e.g. everything-claude-code
+    // with 200+ skills) attach a ~30KB `skill_listing` blob to every turn,
+    // which `--resume` then re-feeds on every subsequent turn. Papercup
+    // doesn't invoke skills via slash commands in piped stdio, so disable
+    // them. Opt back in per session via PAPERCUP_ENABLE_SKILLS=1.
+    if (process.env.PAPERCUP_ENABLE_SKILLS !== "1") {
+      args.push("--disable-slash-commands");
+    }
     // Block the built-in AskUserQuestion in text mode — it requires the
     // interactive TUI to render its prompt UI, and `claude -p` (print mode,
     // which is what papercup uses) can't service it. Without this, the
