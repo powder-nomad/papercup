@@ -8,7 +8,6 @@ import {
   Message,
   TextBasedChannel,
   PermissionFlagsBits,
-  ChannelType,
   ButtonInteraction,
   ModalSubmitInteraction,
 } from "discord.js";
@@ -107,6 +106,66 @@ const botReplyCount = new Map<string, number>();
 // this bot's lifetime. Resets on restart so the indicator fires once per
 // channel per process.
 const firstTurnAnnounced = new Set<string>();
+
+// Context-pressure warnings: track the highest pct threshold already shown
+// in each channel so we don't spam the same warning every turn. Cleared on
+// /bind, /unbind, /compact when the channel switches sessions.
+//   0    = no warning shown yet
+//   0.7  = "consider /compact" shown
+//   0.85 = "compact now" shown
+const contextPressureWarned = new Map<string, number>();
+
+// Conservative effective conversation budget. Claude 4.x's nominal window is
+// 200k tokens, but claude-code reserves headroom for tools, system prompts,
+// hooks, and the next user turn. 180k is a safe practical ceiling.
+const CONTEXT_WINDOW_TOKENS = Number(process.env.AGENT_CONTEXT_WINDOW ?? 180_000);
+const CONTEXT_WARN_PCT = 0.7;
+const CONTEXT_URGENT_PCT = 0.85;
+
+/**
+ * Post a one-time warning in `channel` when the session's most recent
+ * `inputTokens` crosses 70% or 85% of the effective context budget. Each
+ * threshold fires at most once per channel until the channel rebinds or
+ * its session is compacted (state reset by callers).
+ */
+async function maybeWarnContextPressure(
+  channel: TextBasedChannel,
+  channelId: string,
+  sessionName: string,
+  inputTokens: number,
+): Promise<void> {
+  if (!inputTokens || inputTokens <= 0) return;
+  const pct = inputTokens / CONTEXT_WINDOW_TOKENS;
+  const shown = contextPressureWarned.get(channelId) ?? 0;
+  let level: number | undefined;
+  let icon = "";
+  let line = "";
+  if (pct >= CONTEXT_URGENT_PCT && shown < CONTEXT_URGENT_PCT) {
+    level = CONTEXT_URGENT_PCT;
+    icon = "🚨";
+    line =
+      `Context near the ceiling — run \`/compact name:${sessionName}\` now. ` +
+      `Sessions break when the window overflows.`;
+  } else if (pct >= CONTEXT_WARN_PCT && shown < CONTEXT_WARN_PCT) {
+    level = CONTEXT_WARN_PCT;
+    icon = "⚠️";
+    line =
+      `Context getting large — consider \`/compact\` soon to avoid an overflow ` +
+      `(\`/compact name:${sessionName}\` forks this session with a summary).`;
+  }
+  if (level === undefined) return;
+  contextPressureWarned.set(channelId, level);
+  const pctStr = `${Math.round(pct * 100)}%`;
+  const k = `${Math.round(inputTokens / 1000)}k`;
+  const budgetK = `${Math.round(CONTEXT_WINDOW_TOKENS / 1000)}k`;
+  const text = `${icon} **Context ${pctStr}** (${k}/${budgetK} tokens for \`${sessionName}\`). ${line}`;
+  if (!("send" in channel)) return;
+  try {
+    await (channel as { send: (s: string) => Promise<unknown> }).send(text);
+  } catch (err) {
+    console.warn(`[context-pressure] post failed: ${(err as Error).message}`);
+  }
+}
 
 /**
  * Post a single "📍 Session X (new|resumed) …" line in the message's channel.
@@ -233,6 +292,11 @@ client.once("clientReady", async (c) => {
   console.log(`Cup ready as ${c.user.tag}. Waiting for /pickup.`);
   // Track 2 Phase 2: rich-presence broadcast of budget %.
   refreshRichPresence();
+  // Periodic refresh so the status flips to the new day's bucket after UTC
+  // midnight even if no turns happen. 10 min is plenty — Discord's
+  // rate-limit on activity updates is generous, and the user-visible
+  // staleness window after midnight is bounded by this interval.
+  setInterval(refreshRichPresence, 10 * 60 * 1000);
   // Track 2 Phase 3: scrape #roster channel + workdir-overlap check (best-effort).
   const rosterChannelId = process.env.BOT_ROSTER_CHANNEL_ID?.trim();
   if (rosterChannelId) {
@@ -893,24 +957,47 @@ async function handleBind(interaction: ChatInputCommandInteraction): Promise<voi
     await interaction.editReply("Not in a guild.");
     return;
   }
-  // Defense in depth — Discord enforces the perm via setDefaultMemberPermissions,
-  // but check here too in case Discord routes anomalously.
   const member = interaction.member;
   if (!(member instanceof GuildMember) || !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.editReply("You need the **Manage Server** permission to bind the bot.");
+    await interaction.editReply("You need the **Manage Server** permission to bind a channel.");
     return;
   }
 
-  const channel = interaction.options.getChannel("channel", true);
-  if (channel.type !== ChannelType.GuildText) {
-    await interaction.editReply("Pick a text channel.");
+  const sessionName = interaction.options.getString("session", true);
+  const target = sessions.findByName(sessionName);
+  if (!target) {
+    await interaction.editReply(`No session named "${sessionName}". /sessions to list available ones.`);
     return;
   }
 
-  await guildConfig.setBoundChannel(interaction.guildId, channel.id);
-  console.log(`[bind] guild ${interaction.guildId} bound to channel ${channel.id} by ${member.user.tag}`);
+  const channelId = interaction.channelId;
+
+  // If another session was previously bound to this channel, clear its
+  // channelId so the channel→session mapping stays 1:1.
+  for (const s of sessions.list()) {
+    if (s.channelId === channelId && s.id !== target.id) {
+      await sessions.setChannelId(s.id, undefined);
+    }
+  }
+  await sessions.setChannelId(target.id, channelId);
+  await sessions.setMode(target.id, "text");
+  await guildConfig.addBoundChannel(interaction.guildId, channelId);
+
+  // Drop any in-memory chat for this channel — next message will resume
+  // the newly-bound session via findLatestForChannel.
+  const existing = textChats.get(channelId);
+  if (existing) {
+    try { existing.agent.stop?.(); } catch { /* ignore */ }
+    textChats.delete(channelId);
+  }
+  firstTurnAnnounced.delete(channelId);
+  contextPressureWarned.delete(channelId);
+
+  console.log(
+    `[bind] guild ${interaction.guildId} channel ${channelId} → session "${target.name}" by ${member.user.tag}`,
+  );
   await interaction.editReply(
-    `🔗 Bound to <#${channel.id}>. Every message there now goes to Papercup; other channels are ignored.`,
+    `🔗 This channel is now bound to session **${target.name}**. Every message here routes to it.`,
   );
 }
 
@@ -923,13 +1010,28 @@ async function handleUnbind(interaction: ChatInputCommandInteraction): Promise<v
   }
   const member = interaction.member;
   if (!(member instanceof GuildMember) || !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.editReply("You need the **Manage Server** permission to unbind the bot.");
+    await interaction.editReply("You need the **Manage Server** permission to unbind a channel.");
     return;
   }
 
-  await guildConfig.clearBoundChannel(interaction.guildId);
-  console.log(`[unbind] guild ${interaction.guildId} unbound by ${member.user.tag}`);
-  await interaction.editReply("🔓 Unbound. Bot now responds to @mentions across all channels.");
+  const channelId = interaction.channelId;
+  const wasBound = guildConfig.isBound(interaction.guildId, channelId);
+  await guildConfig.removeBoundChannel(interaction.guildId, channelId);
+
+  const existing = textChats.get(channelId);
+  if (existing) {
+    try { existing.agent.stop?.(); } catch { /* ignore */ }
+    textChats.delete(channelId);
+  }
+  firstTurnAnnounced.delete(channelId);
+  contextPressureWarned.delete(channelId);
+
+  console.log(`[unbind] guild ${interaction.guildId} channel ${channelId} by ${member.user.tag}`);
+  await interaction.editReply(
+    wasBound
+      ? "🔓 This channel is unbound. Bot reverts to @mention triggers here."
+      : "This channel wasn't bound. No change.",
+  );
 }
 
 /**
@@ -1521,15 +1623,17 @@ async function handleMessage(msg: Message): Promise<void> {
     }
   }
 
-  // Routing modes (per-guild bind takes precedence over env var):
-  //   bound     — guild has a bound channel via /bind. Listen to every message
-  //               there; ignore other channels.
+  // Routing modes (per-channel bind via /bind takes precedence over env var):
+  //   bound     — this channel is in the guild's boundChannels list. Listen
+  //               to every message here; routes to the session whose
+  //               channelId == this channel.
   //   mention   — fallback. Listen anywhere, but only when @-mentioned.
-  const guildBound = guildConfig.get(msg.guild.id).boundTextChannelId ?? boundTextChannelId;
+  const isBoundChannel =
+    guildConfig.isBound(msg.guild.id, msg.channelId) ||
+    msg.channelId === boundTextChannelId;
   let userText: string;
   const hasAttachments = msg.attachments.size > 0;
-  if (guildBound) {
-    if (msg.channelId !== guildBound) return;
+  if (isBoundChannel) {
     userText = msg.content.trim();
     // Attachments-only messages are valid — no early return on empty text.
     if (userText.length === 0 && !hasAttachments) return;
@@ -1614,6 +1718,7 @@ async function handleTextIntoActiveLine(
   botReplyCount.set(msg.channelId, (botReplyCount.get(msg.channelId) ?? 0) + 1);
   await budget.record(state.session.model, reply.inputTokens, reply.outputTokens);
   refreshRichPresence();
+  void maybeWarnContextPressure(msg.channel, msg.channelId, state.session.name, reply.inputTokens);
 
   // Also speak it on the active voice line.
   if (reply.text) {
@@ -1724,6 +1829,7 @@ async function handleTextOnlyChat(msg: Message, userText: string, outboxDir?: st
   botReplyCount.set(msg.channelId, (botReplyCount.get(msg.channelId) ?? 0) + 1);
   await budget.record(chat.session.model, reply.inputTokens, reply.outputTokens);
   refreshRichPresence();
+  void maybeWarnContextPressure(msg.channel, msg.channelId, chat.session.name, reply.inputTokens);
 }
 
 /**
