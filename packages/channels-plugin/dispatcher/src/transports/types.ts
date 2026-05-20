@@ -111,6 +111,11 @@ export type SessionTransportEvents = {
  */
 export type SessionRuntimeConfig = {
   sessionId: string
+  /** Underlying backend driver name (claude-code, codex, gemini-cli, …).
+   *  Channels transport rejects anything but "claude-code" — the channels
+   *  protocol is claude-only. Per-turn transport routes to the registered
+   *  backend factory. */
+  backend: string
   model?: string
   effort?: string
   permissionMode?: 'default' | 'acceptEdits' | 'auto' | 'bypassPermissions' | 'plan'
