@@ -16,13 +16,13 @@
 # for hosts without user-level systemd.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/../../channels-plugin/dispatcher" && pwd)"
 cd "$ROOT"
 
-PID_FILE="$ROOT/logs/bot.pid"
-LOG_FILE="$ROOT/logs/bot.log"
-UNIT_NAME="papercup-bot.service"
-mkdir -p "$ROOT/logs"
+PID_FILE="/home/papercup/.papercup-channels/dispatcher.pid"
+LOG_FILE="/home/papercup/.papercup-channels/dispatcher.log"
+UNIT_NAME="papercup-bot-channels.service"
+mkdir -p "/home/papercup/.papercup-channels"
 
 use_systemd() {
   command -v systemd-run >/dev/null 2>&1 \
@@ -51,12 +51,6 @@ start() {
     return 0
   fi
   if use_systemd; then
-    # Transient user-level service. --collect drops the unit on exit so we
-    # don't accumulate failed-state stubs across crashes.
-    # systemd's user manager has a minimal default PATH (no `~/.local/bin`,
-    # no nvm shims) so the bot's `spawn('claude')` would ENOENT under it.
-    # Forward the caller's interactive PATH so the daemon resolves binaries
-    # the same way an interactive shell does.
     systemd-run --user --quiet --collect --unit="$UNIT_NAME" \
       --working-directory="$ROOT" \
       --setenv="PATH=$PATH" \
@@ -65,7 +59,7 @@ start() {
       --property=StandardError="append:$LOG_FILE" \
       --property=Restart=on-failure \
       --property=RestartSec=3s \
-      bash -c 'exec npm run --silent start'
+      bash -c 'exec npm start'
     sleep 2
     local pid
     pid="$(unit_pid)"
@@ -77,7 +71,7 @@ start() {
       return 1
     fi
   else
-    setsid bash -c "exec npm run --silent start >> '$LOG_FILE' 2>&1" </dev/null >/dev/null 2>&1 &
+    setsid bash -c "exec npm start >> '$LOG_FILE' 2>&1" </dev/null >/dev/null 2>&1 &
     local pid=$!
     disown
     echo "$pid" > "$PID_FILE"
@@ -95,22 +89,17 @@ stop() {
     systemctl --user stop "$UNIT_NAME" >/dev/null 2>&1 || true
     systemctl --user reset-failed "$UNIT_NAME" >/dev/null 2>&1 || true
     rm -f "$PID_FILE"
-    # Stragglers from a prior non-systemd start, if any.
-    pkill -f "tsx src/index.ts" 2>/dev/null || true
     echo "stopped"
     return 0
   fi
   if [[ ! -f "$PID_FILE" ]] || ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     rm -f "$PID_FILE"
-    pkill -f "tsx src/index.ts" 2>/dev/null || true
     echo "not running"
     return 0
   fi
   local pid
   pid=$(cat "$PID_FILE")
-  pkill -P "$pid" 2>/dev/null || true
   kill "$pid" 2>/dev/null || true
-  pkill -f "tsx src/index.ts" 2>/dev/null || true
   rm -f "$PID_FILE"
   echo "stopped"
 }
@@ -121,9 +110,6 @@ status() {
     pid="$(unit_pid)"
     echo "running (pid $pid, unit $UNIT_NAME)"
     ps -o pid,etime,cmd -p "$pid" 2>/dev/null || true
-    echo
-    echo "child processes:"
-    pgrep -fa "tsx src/index.ts" || echo "  (none)"
     return 0
   fi
   if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
@@ -131,9 +117,6 @@ status() {
     pid=$(cat "$PID_FILE")
     echo "running (pid $pid)"
     ps -o pid,etime,cmd -p "$pid" 2>/dev/null || true
-    echo
-    echo "child processes:"
-    pgrep -fa "tsx src/index.ts" || echo "  (none)"
   else
     echo "stopped"
   fi
