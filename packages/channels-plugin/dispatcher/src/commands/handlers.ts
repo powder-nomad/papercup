@@ -17,6 +17,7 @@ import {
   PermissionFlagsBits,
 } from 'discord.js'
 import type { CommandContext } from './types.ts'
+import type { SessionTransportName } from '../state/sessions.ts'
 import { compactSession } from '../compact.ts'
 
 export async function handleBind(
@@ -37,6 +38,9 @@ export async function handleBind(
 
   const channelId = interaction.channelId
   const nameOpt = interaction.options.getString('name') ?? undefined
+  const transportOpt = (interaction.options.getString('transport') ?? undefined) as
+    | SessionTransportName
+    | undefined
 
   // If a name was given, look it up. Otherwise, prefer reattaching the
   // existing session on this channel (so /bind is also "reactivate").
@@ -48,7 +52,14 @@ export async function handleBind(
     return
   }
   if (!target) {
-    target = await ctx.sessions.create({ channelId })
+    target = await ctx.sessions.create({ channelId, transport: transportOpt })
+  } else if (transportOpt && transportOpt !== target.transport) {
+    // Existing session, but caller requested a different transport — apply it
+    // and kill any running child so the next message respawns under the new
+    // transport.
+    ctx.killFor(target.id)
+    const updated = await ctx.sessions.setTransport(target.id, transportOpt)
+    if (updated) target = updated
   }
 
   // Keep channel↔session 1:1: clear channelId on any other session previously
@@ -64,10 +75,57 @@ export async function handleBind(
   ctx.spawnFor(target)
 
   console.log(
-    `[bind] guild ${interaction.guildId} channel ${channelId} → session "${target.name}" by ${member.user.tag}`,
+    `[bind] guild ${interaction.guildId} channel ${channelId} → session "${target.name}" (transport=${target.transport}) by ${member.user.tag}`,
   )
   await interaction.editReply(
-    `🔗 This channel is now bound to session **${target.name}**. Every message here routes to it.`,
+    `🔗 This channel is now bound to session **${target.name}** (transport: \`${target.transport}\`). Every message here routes to it.`,
+  )
+}
+
+/**
+ * /transport mode:<channels|per-turn> — switch the bound session's transport.
+ * Kills the running child (if any); next message respawns under the new
+ * transport.
+ */
+export async function handleTransport(
+  interaction: ChatInputCommandInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+
+  if (!interaction.guildId) {
+    await interaction.editReply('Not in a guild.')
+    return
+  }
+  const member = interaction.member
+  if (!(member instanceof GuildMember) || !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.editReply('You need the **Manage Server** permission to change a session transport.')
+    return
+  }
+
+  const target = ctx.sessions.findLatestForChannel(interaction.channelId)
+  if (!target) {
+    await interaction.editReply('No session bound to this channel. Run `/bind` first.')
+    return
+  }
+
+  const mode = interaction.options.getString('mode', true) as SessionTransportName
+  if (mode === target.transport) {
+    await interaction.editReply(`Session **${target.name}** is already on transport \`${mode}\`. No change.`)
+    return
+  }
+
+  ctx.killFor(target.id)
+  const updated = await ctx.sessions.setTransport(target.id, mode)
+  if (!updated) {
+    await interaction.editReply('Session vanished between lookup and update — try again.')
+    return
+  }
+  const note = mode === 'per-turn'
+    ? ' Permission relay is disabled in per-turn mode (claude runs with --dangerously-skip-permissions).'
+    : ''
+  await interaction.editReply(
+    `🔁 Transport set to \`${mode}\`. Claude child killed; next message respawns.${note}`,
   )
 }
 
@@ -122,6 +180,7 @@ export async function handleSessions(
     const idleMin = Math.floor((Date.now() - s.lastActiveAt) / 60_000)
     const status = ctx.isPluginOnline(s.id) ? '🟢' : '⚪'
     const extras = [
+      `transport=${s.transport}`,
       s.model && `model=${s.model}`,
       s.effort && `effort=${s.effort}`,
       s.permissionMode && `perm=${s.permissionMode}`,

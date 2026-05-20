@@ -1,12 +1,21 @@
 # papercup-channels — Design
 
-Anthropic-channels-based reimplementation of papercup's session-switching
-+ STT/TTS Discord experience, built on top of `claude --channels`.
+Discord bot with **two transports under one roof**:
 
-The existing `packages/bot/` stays as-is — it's the multi-backend
-standalone Discord bot for users without claude.ai subscription auth.
-This package is the new claude.ai-subscription variant that uses
-Anthropic's official channels mechanism.
+1. **channels** — long-lived `claude --channels` child per session (the
+   original motivation for this package; uses claude.ai subscription auth).
+2. **per-turn** — `claude -p --resume <session-id>` spawned per turn, with
+   mid-turn injection ("phone-call interrupt" UX).
+
+Both transports share the same Discord gateway, slash commands, voice
+subsystem, session store, and reply path. Sessions stamp which one they
+want via the `transport: "channels" | "per-turn"` field; the dispatcher
+routes events to the right driver.
+
+The existing `packages/bot/` is the legacy multi-backend bot (codex,
+aider, gemini-cli, etc.) and remains its own thing until those backends
+are lifted into the new transport-pluggable dispatcher (see "Future"
+below).
 
 ## Why a new package, not a refactor
 
@@ -24,6 +33,125 @@ overhead.
 Docs: <https://code.claude.com/docs/en/channels>
 Anthropic's official Discord channel plugin (reference implementation):
 <https://github.com/anthropics/claude-plugins-official/tree/main/external_plugins/discord>
+
+## SessionTransport — the unifying abstraction
+
+Voice and text were never really different things — they're both ways for the
+user to *push an event into a session*. The dispatcher used to bake that into
+the channels-only code path; it now talks to a `SessionTransport` interface
+that each driver implements:
+
+```ts
+interface SessionTransport {
+  readonly name: 'channels' | 'per-turn'
+  ensureRunning(cfg)           // idempotent spawn (or refresh config)
+  pushEvent(event)             // text or voice utterance → agent
+  on('reply'|'permissionRequest'|'turnComplete', listener)
+  resolvePermission(rid, behavior, userId)
+  cancel(sessionId)            // SIGTERM the running child
+  stopSession(sessionId)
+  isAlive(sessionId)
+}
+```
+
+The dispatcher (`src/index.ts`) doesn't care which transport is under a
+session. It calls `transport.pushEvent(...)` on text inbound, voice
+utterances, and any future input source; it listens for `reply` /
+`permissionRequest` / `turnComplete` events the same way regardless of the
+underlying CLI invocation pattern.
+
+### Channels transport — long-lived
+
+```
+                                Discord gateway
+                                      │
+                                      ▼
+                  ┌──────────────────────────────────┐
+                  │   dispatcher                     │
+                  │ • single bot gateway connection  │
+                  │ • voice + STT/TTS                │
+                  │ • TransportRegistry              │
+                  │ • channelId → sessionId map      │
+                  └──────────────────────────────────┘
+                                      │
+                                      │ Unix domain socket
+                                      ▼
+                  ┌──────────────────────────────────┐
+                  │ claude --channels                │
+                  │ plugin:papercup-channels         │
+                  │ --resume <session-A>             │
+                  └──────────────────────────────────┘
+                                      ↑
+                                      │ MCP `reply` tool
+                                      │ MCP `permission` callbacks
+                                      ▼
+                  ┌──────────────────────────────────┐
+                  │  Bun plugin (plugin/server.ts)   │
+                  └──────────────────────────────────┘
+```
+
+One claude child per bound channel. Hooks fire once per process. Prompt
+cache stays warm across turns. Mid-turn injection is native — push another
+event while claude is mid-reply and the channels protocol delivers it as a
+second turn.
+
+### Per-turn transport — phone-call interrupts
+
+```
+                                Discord gateway
+                                      │
+                                      ▼
+                  ┌──────────────────────────────────┐
+                  │   dispatcher                     │
+                  │ + PerTurnTransport               │
+                  │ + queue<SessionEvent>            │
+                  └──────────────────────────────────┘
+                                      │
+                                      ▼ spawn / SIGTERM
+                  ┌──────────────────────────────────┐
+                  │ claude -p "<merged prompt>"      │
+                  │ --resume <session-A>             │
+                  │ --output-format stream-json      │
+                  └──────────────────────────────────┘
+                                      │ stdout (stream-json)
+                                      ▼
+                  reply text + token usage → onReply event
+```
+
+One `claude -p` per turn, with `--session-id` on first turn and `--resume`
+on subsequent turns. Mid-turn injection works by **cancel-and-restart**:
+
+1. User sends message → spawn `claude -p` with prompt #1.
+2. User sends another message before reply lands → enqueue, SIGTERM the
+   in-flight child.
+3. On exit, the queue is non-empty → spawn a new `claude -p` with a merged
+   prompt that includes both utterances, tagged so the agent knows the user
+   interrupted.
+
+This matches the "phone-call over Discord" UX papercup was originally
+designed for: speaking over the bot interrupts and redirects it, just like
+talking over a person.
+
+Tradeoffs:
+- Per-turn pays ~500-1000ms process startup per turn (no prompt-cache warmth
+  across turns; claude-code's local session store handles the transcript).
+- No permission relay — the CLI runs with `--dangerously-skip-permissions`.
+  Users who need permission gates should pick the channels transport.
+- Token usage is parsed from the stream-json `result` event at end-of-turn,
+  same as channels.
+
+### TransportRegistry
+
+`src/transports/registry.ts` constructs one of each transport at boot
+(currently `channels` + `per-turn`). The dispatcher resolves per-session via
+`transports.get(session.transport)`. Adding a new transport (e.g.
+`codex-per-turn`, `gemini-per-turn`) requires:
+
+1. Implement `SessionTransport` (file in `src/transports/`).
+2. Register in `TransportRegistry` constructor.
+3. Extend `SessionTransportName` union in `state/sessions.ts`.
+4. Add the choice to the `/bind transport:` and `/transport mode:` slash
+   command option lists in `register-commands.ts`.
 
 ## Architecture (locked)
 

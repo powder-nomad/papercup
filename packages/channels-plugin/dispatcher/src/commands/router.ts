@@ -13,6 +13,7 @@ import {
   handleSay,
   handleCompact,
   handleResume,
+  handleTransport,
 } from './handlers.ts'
 import type { CommandContext } from './types.ts'
 
@@ -93,6 +94,9 @@ export async function dispatchInteraction(
         return
       case 'resume':
         await handleResume(interaction, ctx)
+        return
+      case 'transport':
+        await handleTransport(interaction, ctx)
         return
       default:
         if (interaction.deferred || interaction.replied) return

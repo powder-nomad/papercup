@@ -35,6 +35,33 @@ const commands = [
         .setRequired(false)
         .setMaxLength(60),
     )
+    .addStringOption(o =>
+      o
+        .setName('transport')
+        .setDescription(
+          'Transport mode for new sessions. channels = long-lived; per-turn = phone-call-style interrupt UX.',
+        )
+        .setRequired(false)
+        .addChoices(
+          { name: 'channels (long-lived, default)', value: 'channels' },
+          { name: 'per-turn (phone-call interrupts, no permission relay)', value: 'per-turn' },
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('transport')
+    .setDescription("(Admin) Switch this channel's bound session to a different transport. Kills + respawns.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption(o =>
+      o
+        .setName('mode')
+        .setDescription('Transport mode')
+        .setRequired(true)
+        .addChoices(
+          { name: 'channels (long-lived)', value: 'channels' },
+          { name: 'per-turn (phone-call interrupts)', value: 'per-turn' },
+        ),
+    )
     .toJSON(),
   new SlashCommandBuilder()
     .setName('unbind')

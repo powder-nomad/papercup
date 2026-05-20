@@ -1,9 +1,18 @@
 # papercup-channels
 
-claude.ai-subscription Discord bot built on Anthropic's channels protocol.
-One long-lived `claude --channels` session per bound channel, no `claude -p`
-per turn, no `skill_listing` blob re-feeding. See `DESIGN.md` for the
-architectural rationale and `PROTOCOL.md` for the channels MCP contract.
+Discord bot with **two transports under one roof**:
+
+- `channels` — long-lived `claude --channels` per bound session. claude.ai
+  subscription auth, prompt cache stays warm, permission relay via Discord
+  buttons. Default.
+- `per-turn` — `claude -p --resume` per turn with **mid-turn injection**:
+  speaking/typing during a reply interrupts and redirects, like a phone call.
+  No permission relay (runs with `--dangerously-skip-permissions`).
+
+Both share the same Discord gateway, voice subsystem (Silero VAD + Whisper
+STT + Kokoro/Melo TTS), slash commands, idle reaper, allowlist, and
+context-pressure indicator. See `DESIGN.md` for the architectural rationale
+and `PROTOCOL.md` for the channels MCP contract.
 
 ```
    Discord                                claude session(s)
@@ -99,6 +108,8 @@ claude children. Use the slash commands to manage bindings:
 | --- | --- |
 | `/bind` (in a channel) | Bind this channel to a new (or existing) claude session. Spawns the child. |
 | `/bind name:foo` | Bind this channel to existing session `foo`. |
+| `/bind transport:per-turn` | Bind a new session using the per-turn transport (phone-call interrupts). Omit `transport:` for the default `channels`. |
+| `/transport mode:<channels\|per-turn>` | Switch this channel's bound session to a different transport. Kills + respawns. |
 | `/unbind` | Kill this channel's claude child and drop the binding. Session metadata kept. |
 | `/resume name:foo` | In this bound channel, switch to session `foo` (create if missing). Mirrors `claude --resume <name>`. Kills the previously-bound session's child; transcripts persist on disk so a future `/resume name:<prev>` brings it back. |
 | `/sessions` | List all sessions, idle time, model/effort/perm overrides. 🟢 = plugin connected. |
@@ -124,6 +135,20 @@ Boot-time log when you have a bound channel:
 [claude] stdout(...): {"type":"assistant","message":{...}}
 [discord] reply sent: session=..., msgId=m..., discord_ids=...
 ```
+
+## Choosing a transport
+
+| | `channels` | `per-turn` |
+| --- | --- | --- |
+| Lifecycle | One long-lived child per session | New `claude -p` per turn |
+| Mid-turn injection | Native (channels protocol delivers as new turn) | Cancel-and-restart with merged prompt |
+| Prompt cache | Warm across turns | Cold each turn (~500-1000ms startup) |
+| Permission relay | ✅ Discord buttons | ❌ `--dangerously-skip-permissions` |
+| Auth | claude.ai subscription | claude.ai subscription |
+| Best for | Coding sessions, long multi-turn work | Voice / phone-call UX where interruption is the norm |
+
+Voice + text always share the same session — the difference is only how the
+underlying claude process is driven.
 
 After ~30min idle, the reaper SIGTERMs the child:
 
