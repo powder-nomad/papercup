@@ -1,0 +1,30 @@
+{
+  "name": "@papercup/channels-dispatcher",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Papercup channels dispatcher — single Discord gateway + UDS server + claude-child spawner.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "register": "tsx src/register-commands.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.9.0",
+    "@discordjs/voice": "^0.19.2",
+    "@papercup/voice-stack": "file:../../voice-stack",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "prism-media": "^1.3.5",
+    "sodium-native": "^4.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}

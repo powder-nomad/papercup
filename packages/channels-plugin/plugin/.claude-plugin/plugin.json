@@ -1,0 +1,6 @@
+{
+  "name": "papercup-channels",
+  "description": "Papercup channel plugin — routes Discord text (and later voice) through a long-lived claude session via the channels protocol. Pairs with the papercup-channels dispatcher process.",
+  "version": "0.0.1",
+  "keywords": ["papercup", "discord", "channel", "mcp"]
+}

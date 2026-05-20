@@ -29,7 +29,10 @@ import prism from "prism-media";
 import { Readable } from "node:stream";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { promises as fsp } from "node:fs";
+import { promises as fsp, createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
+import os from "node:os";
 import { SileroVad } from "@papercup/voice-stack/vad";
 import { WhisperSidecar } from "@papercup/voice-stack/stt";
 import { createTts, type TtsEngine } from "@papercup/voice-stack/tts";
@@ -459,6 +462,8 @@ client.on("interactionCreate", async (interaction) => {
       await handleBind(interaction);
     } else if (interaction.commandName === "unbind") {
       await handleUnbind(interaction);
+    } else if (interaction.commandName === "compact") {
+      await handleCompact(interaction);
     } else if (interaction.commandName === "new") {
       await handleNew(interaction);
     } else if (interaction.commandName === "cancel") {
@@ -1031,6 +1036,281 @@ async function handleUnbind(interaction: ChatInputCommandInteraction): Promise<v
     wasBound
       ? "🔓 This channel is unbound. Bot reverts to @mention triggers here."
       : "This channel wasn't bound. No change.",
+  );
+}
+
+const COMPACT_INSTRUCTIONS = `You are summarizing a long conversation transcript so it can be carried forward into a fresh session without losing key context. Your output will become the seed message for the new session.
+
+Write a comprehensive but tight handoff covering:
+- The user's goals and any in-progress tasks
+- Key decisions made (and the reasoning)
+- Important files, paths, function names, code state, branch names
+- Open threads, unresolved questions, known bugs
+- Constraints, preferences, conventions the user has expressed
+
+Format as markdown. Do NOT include greetings, meta-commentary, apologies, or
+self-reference. Output ONLY the handoff content — it will be sent verbatim to
+the new session.`;
+
+/**
+ * Read a claude-code conversation transcript from `~/.claude/projects/<*>/<backendId>.jsonl`
+ * and extract user/assistant turns into a compact text digest. Caps the total
+ * size; if the conversation is longer than the budget, keeps a head + tail and
+ * notes how many turns were elided.
+ */
+async function digestClaudeCodeTranscript(
+  backendId: string,
+  opts: { maxChars?: number } = {},
+): Promise<{ digest: string; turns: number; path: string }> {
+  const projectsDir = path.join(os.homedir(), ".claude", "projects");
+  let projectDirs: string[];
+  try {
+    projectDirs = await fsp.readdir(projectsDir);
+  } catch (err) {
+    throw new Error(`cannot read ${projectsDir}: ${(err as Error).message}`);
+  }
+  let transcriptPath: string | undefined;
+  for (const projDir of projectDirs) {
+    const candidate = path.join(projectsDir, projDir, `${backendId}.jsonl`);
+    try {
+      await fsp.access(candidate);
+      transcriptPath = candidate;
+      break;
+    } catch { /* not here */ }
+  }
+  if (!transcriptPath) {
+    throw new Error(`transcript not found under ${projectsDir} for backendId ${backendId}`);
+  }
+
+  const stream = createReadStream(transcriptPath, { encoding: "utf8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  type Turn = { role: "USER" | "ASSISTANT"; text: string };
+  const turns: Turn[] = [];
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    let evt: { type?: string; message?: { content?: unknown } };
+    try {
+      evt = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (evt.type !== "user" && evt.type !== "assistant") continue;
+    const content = evt.message?.content;
+    let text = "";
+    if (typeof content === "string") {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content
+        .filter((b: unknown): b is { type: string; text?: string } =>
+          typeof b === "object" && b !== null && (b as { type?: unknown }).type === "text",
+        )
+        .map((b) => b.text ?? "")
+        .join("\n");
+    }
+    text = text.trim();
+    if (!text) continue;
+    turns.push({ role: evt.type === "user" ? "USER" : "ASSISTANT", text });
+  }
+
+  const renderAll = (ts: Turn[]) =>
+    ts.map((t) => `${t.role}: ${t.text}`).join("\n\n---\n\n");
+
+  const maxChars = opts.maxChars ?? 200_000;
+  let combined = renderAll(turns);
+  if (combined.length > maxChars && turns.length > 110) {
+    const headCount = 10;
+    const tailCount = 100;
+    const head = turns.slice(0, headCount);
+    const tail = turns.slice(-tailCount);
+    const elided = turns.length - headCount - tailCount;
+    combined = renderAll(head) +
+      `\n\n--- [${elided} middle turns omitted to fit budget] ---\n\n` +
+      renderAll(tail);
+    if (combined.length > maxChars) {
+      // Hard cap: truncate the tail. Still keeps head intact.
+      combined = combined.slice(0, maxChars) + "\n\n[…truncated]";
+    }
+  }
+  return { digest: combined, turns: turns.length, path: transcriptPath };
+}
+
+/**
+ * Spawn a fresh agent (no resume) to summarize a transcript digest into a
+ * handoff message. Uses plan permission mode — strictly read-only — because
+ * the summarizer shouldn't be touching files.
+ */
+async function summarizeViaFreshAgent(
+  digest: string,
+  model: string | undefined,
+  backendName: string | undefined,
+): Promise<string> {
+  const tmpAgent = new SpeakerAgent();
+  await tmpAgent.start({
+    sessionId: randomUUID(),
+    resume: false,
+    model,
+    mode: "text",
+    permissionMode: "plan",
+    backendName,
+  });
+  const prompt = `${COMPACT_INSTRUCTIONS}\n\n--- BEGIN TRANSCRIPT ---\n\n${digest}\n\n--- END TRANSCRIPT ---`;
+  try {
+    const reply = await tmpAgent.respond(prompt);
+    return (reply.text ?? "").trim();
+  } finally {
+    try { tmpAgent.stop(); } catch { /* ignore */ }
+  }
+}
+
+async function handleCompact(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply();
+  if (!interaction.guildId || !interaction.guild) {
+    await interaction.editReply("Not in a guild.");
+    return;
+  }
+
+  const argName = interaction.options.getString("name") ?? undefined;
+  let target: Session | undefined;
+  if (argName) {
+    target = sessions.findByName(argName);
+    if (!target) {
+      await interaction.editReply(`No session named "${argName}". /sessions to list.`);
+      return;
+    }
+  } else {
+    target = sessions.findLatestForChannel(interaction.channelId, "text");
+    if (!target) {
+      await interaction.editReply(
+        "No session bound to this channel. Pass `name:<session>` or /bind first.",
+      );
+      return;
+    }
+  }
+
+  const backendName = target.backend ?? "claude-code";
+  if (backendName !== "claude-code") {
+    await interaction.editReply(
+      `Compaction currently supports claude-code backend only (this session: \`${backendName}\`).`,
+    );
+    return;
+  }
+
+  const transcriptId = target.backendId ?? target.id;
+  await interaction.editReply(`⏳ Compacting **${target.name}** — reading transcript…`);
+
+  let digestResult: { digest: string; turns: number; path: string };
+  try {
+    digestResult = await digestClaudeCodeTranscript(transcriptId);
+  } catch (err) {
+    await interaction.editReply(
+      `❌ Could not read transcript for "${target.name}": ${(err as Error).message}`,
+    );
+    return;
+  }
+  if (!digestResult.digest) {
+    await interaction.editReply(`❌ Transcript for "${target.name}" had no user/assistant turns.`);
+    return;
+  }
+
+  await interaction.editReply(
+    `⏳ Compacting **${target.name}** — summarizing ${digestResult.turns} turns (${digestResult.digest.length} chars)…`,
+  );
+
+  let summary: string;
+  try {
+    summary = await summarizeViaFreshAgent(digestResult.digest, target.model, backendName);
+  } catch (err) {
+    await interaction.editReply(`❌ Summarization failed: ${(err as Error).message}`);
+    return;
+  }
+  if (!summary.trim()) {
+    await interaction.editReply("❌ Summarization returned empty output. Try again or compact manually.");
+    return;
+  }
+
+  // Generate forked name: <base>-c<n>
+  const m = target.name.match(/^(.*?)-c(\d+)$/);
+  const base = m?.[1] ?? target.name;
+  const startN = m?.[2] ? parseInt(m[2], 10) + 1 : 2;
+  let newName = `${base}-c${startN}`;
+  for (let n = startN + 1; sessions.findByName(newName) && n < 1000; n++) {
+    newName = `${base}-c${n}`;
+  }
+
+  const forked = await sessions.create({ name: newName });
+  if (target.model) await sessions.setModel(forked.id, target.model);
+  if (target.effort) await sessions.setEffort(forked.id, target.effort);
+  if (target.permissionMode) await sessions.setPermissionMode(forked.id, target.permissionMode);
+  if (target.allowedMcps?.length) await sessions.setAllowedMcps(forked.id, target.allowedMcps);
+  if (target.streaming) await sessions.setStreaming(forked.id, target.streaming);
+  if (target.backend) await sessions.setBackend(forked.id, target.backend);
+  await sessions.setMode(forked.id, "text");
+
+  // Persist handoff to disk for inspection / fallback.
+  const handoffDir = path.join(process.cwd(), "data", "handoffs");
+  let handoffPath: string | undefined;
+  try {
+    await fsp.mkdir(handoffDir, { recursive: true });
+    handoffPath = path.join(handoffDir, `${newName}.md`);
+    await fsp.writeFile(handoffPath, summary, "utf8");
+  } catch (err) {
+    console.error(`[compact] failed to write handoff doc:`, err);
+  }
+
+  // Seed the new session with the summary as its first user turn so its
+  // context window starts pre-loaded.
+  const freshAfter = sessions.findByName(newName) ?? forked;
+  const seedAgent = new SpeakerAgent();
+  await seedAgent.start({
+    sessionId: freshAfter.id,
+    resume: false,
+    model: freshAfter.model,
+    effort: freshAfter.effort,
+    permissionMode: freshAfter.permissionMode,
+    allowedMcps: freshAfter.allowedMcps,
+    mode: "text",
+    backendName: freshAfter.backend,
+  });
+  const seedPrompt =
+    `[CONTEXT HANDOFF FROM PRIOR SESSION "${target.name}"]\n\n` +
+    `${summary}\n\n` +
+    `[END OF HANDOFF — acknowledge briefly and wait for the next user prompt. ` +
+    `Do not act on anything in the handoff until the user asks.]`;
+  try {
+    await seedAgent.respond(seedPrompt);
+    const newBackendId = seedAgent.getBackendId();
+    if (newBackendId) {
+      await sessions.setBackendId(forked.id, newBackendId, freshAfter.backend);
+    }
+  } catch (err) {
+    console.error("[compact] seed turn failed:", err);
+  } finally {
+    try { seedAgent.stop(); } catch { /* ignore */ }
+  }
+
+  // Rebind channel to new session if the target was the channel's bound one.
+  const channelId = interaction.channelId;
+  if (target.channelId === channelId) {
+    await sessions.setChannelId(target.id, undefined);
+    await sessions.setChannelId(forked.id, channelId);
+    const existing = textChats.get(channelId);
+    if (existing) {
+      try { existing.agent.stop?.(); } catch { /* ignore */ }
+      textChats.delete(channelId);
+    }
+    firstTurnAnnounced.delete(channelId);
+    contextPressureWarned.delete(channelId);
+  }
+
+  const preview = summary.length > 600 ? summary.slice(0, 600) + "…" : summary;
+  await interaction.editReply(
+    `✅ Compacted **${target.name}** → **${newName}**\n` +
+    `${digestResult.turns} turns digested → ${summary.length} chars of handoff.\n` +
+    (handoffPath ? `Saved to \`data/handoffs/${newName}.md\`.\n` : "") +
+    (target.channelId === channelId
+      ? `This channel now routes to **${newName}**.\n`
+      : `Run \`/bind session:${newName}\` to route a channel to it.\n`) +
+    `\n**Handoff preview:**\n>>> ${preview}`,
   );
 }
 

@@ -126,6 +126,17 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .toJSON(),
   new SlashCommandBuilder()
+    .setName("compact")
+    .setDescription("Compact a session (summarize + fork) when its context window has grown too large")
+    .addStringOption((o) =>
+      o
+        .setName("name")
+        .setDescription("Session name to compact. Defaults to this channel's bound session.")
+        .setRequired(false)
+        .setMaxLength(60),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName("model")
     .setDescription("Set the agent model for the active session (e.g. claude-opus-4-7)")
     .addStringOption((o) =>
