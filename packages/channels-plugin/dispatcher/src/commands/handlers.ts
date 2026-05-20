@@ -41,6 +41,16 @@ export async function handleBind(
   const transportOpt = (interaction.options.getString('transport') ?? undefined) as
     | SessionTransportName
     | undefined
+  const backendOpt = interaction.options.getString('backend') ?? undefined
+
+  // Channels transport is claude-code-only — reject mismatched combinations
+  // at bind time so the user gets a clear error instead of a silent no-op.
+  if (transportOpt === 'channels' && backendOpt && backendOpt !== 'claude-code') {
+    await interaction.editReply(
+      `❌ Channels transport is claude-only. Use \`transport:per-turn\` with backend \`${backendOpt}\`.`,
+    )
+    return
+  }
 
   // If a name was given, look it up. Otherwise, prefer reattaching the
   // existing session on this channel (so /bind is also "reactivate").
@@ -52,14 +62,28 @@ export async function handleBind(
     return
   }
   if (!target) {
-    target = await ctx.sessions.create({ channelId, transport: transportOpt })
-  } else if (transportOpt && transportOpt !== target.transport) {
-    // Existing session, but caller requested a different transport — apply it
-    // and kill any running child so the next message respawns under the new
-    // transport.
-    ctx.killFor(target.id)
-    const updated = await ctx.sessions.setTransport(target.id, transportOpt)
-    if (updated) target = updated
+    // Auto-pick per-turn for non-claude backends if transport not specified.
+    const effectiveTransport: SessionTransportName | undefined =
+      transportOpt ?? (backendOpt && backendOpt !== 'claude-code' ? 'per-turn' : undefined)
+    target = await ctx.sessions.create({
+      channelId,
+      transport: effectiveTransport,
+      backend: backendOpt,
+    })
+  } else {
+    // Existing session — apply any requested overrides, killing the child
+    // so the next message respawns under the new config.
+    let mutated = false
+    if (transportOpt && transportOpt !== target.transport) {
+      ctx.killFor(target.id)
+      const u = await ctx.sessions.setTransport(target.id, transportOpt)
+      if (u) { target = u; mutated = true }
+    }
+    if (backendOpt && backendOpt !== target.backend) {
+      if (!mutated) ctx.killFor(target.id)
+      const u = await ctx.sessions.setBackend(target.id, backendOpt)
+      if (u) { target = u }
+    }
   }
 
   // Keep channel↔session 1:1: clear channelId on any other session previously
@@ -75,10 +99,10 @@ export async function handleBind(
   ctx.spawnFor(target)
 
   console.log(
-    `[bind] guild ${interaction.guildId} channel ${channelId} → session "${target.name}" (transport=${target.transport}) by ${member.user.tag}`,
+    `[bind] guild ${interaction.guildId} channel ${channelId} → session "${target.name}" (transport=${target.transport} backend=${target.backend}) by ${member.user.tag}`,
   )
   await interaction.editReply(
-    `🔗 This channel is now bound to session **${target.name}** (transport: \`${target.transport}\`). Every message here routes to it.`,
+    `🔗 This channel is now bound to session **${target.name}** (transport: \`${target.transport}\`, backend: \`${target.backend}\`). Every message here routes to it.`,
   )
 }
 
@@ -126,6 +150,57 @@ export async function handleTransport(
     : ''
   await interaction.editReply(
     `🔁 Transport set to \`${mode}\`. Claude child killed; next message respawns.${note}`,
+  )
+}
+
+/**
+ * /backend name:<…> — switch the bound session's underlying CLI driver.
+ * Channels-transport sessions are pinned to claude-code; this command will
+ * reject anything else for them (caller should /transport mode:per-turn first).
+ */
+export async function handleBackend(
+  interaction: ChatInputCommandInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+
+  if (!interaction.guildId) {
+    await interaction.editReply('Not in a guild.')
+    return
+  }
+  const member = interaction.member
+  if (!(member instanceof GuildMember) || !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.editReply('You need the **Manage Server** permission to change a session backend.')
+    return
+  }
+
+  const target = ctx.sessions.findLatestForChannel(interaction.channelId)
+  if (!target) {
+    await interaction.editReply('No session bound to this channel. Run `/bind` first.')
+    return
+  }
+
+  const name = interaction.options.getString('name', true)
+  if (name === target.backend) {
+    await interaction.editReply(`Session **${target.name}** is already on backend \`${name}\`. No change.`)
+    return
+  }
+  if (target.transport === 'channels' && name !== 'claude-code') {
+    await interaction.editReply(
+      `❌ This session uses the channels transport, which is claude-only. ` +
+      `Run \`/transport mode:per-turn\` first, then \`/backend name:${name}\`.`,
+    )
+    return
+  }
+
+  ctx.killFor(target.id)
+  const updated = await ctx.sessions.setBackend(target.id, name)
+  if (!updated) {
+    await interaction.editReply('Session vanished between lookup and update — try again.')
+    return
+  }
+  await interaction.editReply(
+    `🔁 Backend set to \`${name}\`. Agent killed; next message respawns with the new CLI.`,
   )
 }
 
@@ -181,6 +256,7 @@ export async function handleSessions(
     const status = ctx.isPluginOnline(s.id) ? '🟢' : '⚪'
     const extras = [
       `transport=${s.transport}`,
+      `backend=${s.backend}`,
       s.model && `model=${s.model}`,
       s.effort && `effort=${s.effort}`,
       s.permissionMode && `perm=${s.permissionMode}`,

@@ -90,6 +90,13 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
 
   ensureRunning(cfg: SessionRuntimeConfig): void {
     if (this.claude.isAlive(cfg.sessionId)) return
+    if (cfg.backend !== 'claude-code') {
+      this.log.warn(
+        `channels transport only supports backend=claude-code (got ${cfg.backend}). ` +
+        `Session ${cfg.sessionId} will not be spawned. Switch transport to per-turn or change backend.`,
+      )
+      return
+    }
     this.claude.spawn({
       sessionId: cfg.sessionId,
       pluginDir: this.init.pluginDir,

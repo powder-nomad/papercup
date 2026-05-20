@@ -152,6 +152,7 @@ async function main(): Promise<void> {
     contextWarnTier.delete(session.id)
     transport.ensureRunning({
       sessionId: session.id,
+      backend: session.backend,
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,

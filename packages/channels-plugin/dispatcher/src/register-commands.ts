@@ -47,6 +47,21 @@ const commands = [
           { name: 'per-turn (phone-call interrupts, no permission relay)', value: 'per-turn' },
         ),
     )
+    .addStringOption(o =>
+      o
+        .setName('backend')
+        .setDescription('Backend agent CLI. Defaults to claude-code. Non-claude backends require transport:per-turn.')
+        .setRequired(false)
+        .addChoices(
+          { name: 'claude-code (default)', value: 'claude-code' },
+          { name: 'codex (OpenAI Codex CLI)', value: 'codex' },
+          { name: 'gemini-cli (Google Gemini CLI)', value: 'gemini-cli' },
+          { name: 'aider', value: 'aider-cli' },
+          { name: 'opencode', value: 'opencode-cli' },
+          { name: 'crush (Charm)', value: 'crush-cli' },
+          { name: 'amp (Sourcegraph)', value: 'amp-cli' },
+        ),
+    )
     .toJSON(),
   new SlashCommandBuilder()
     .setName('transport')
@@ -60,6 +75,26 @@ const commands = [
         .addChoices(
           { name: 'channels (long-lived)', value: 'channels' },
           { name: 'per-turn (phone-call interrupts)', value: 'per-turn' },
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('backend')
+    .setDescription("(Admin) Switch this channel's bound session to a different backend CLI. Kills + respawns.")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption(o =>
+      o
+        .setName('name')
+        .setDescription('Backend agent CLI')
+        .setRequired(true)
+        .addChoices(
+          { name: 'claude-code', value: 'claude-code' },
+          { name: 'codex', value: 'codex' },
+          { name: 'gemini-cli', value: 'gemini-cli' },
+          { name: 'aider', value: 'aider-cli' },
+          { name: 'opencode', value: 'opencode-cli' },
+          { name: 'crush', value: 'crush-cli' },
+          { name: 'amp', value: 'amp-cli' },
         ),
     )
     .toJSON(),

@@ -1,30 +1,27 @@
 /**
- * PerTurnTransport — `claude -p` per turn, with --session-id / --resume.
+ * PerTurnTransport — `<binary> -p` per turn, with mid-turn injection.
  *
- * The CLI's local session store holds the transcript. This transport spawns
- * one `claude -p` child per user turn, parses the stream-json output for
- * the final reply text + token usage, and emits a `reply` event back to the
- * dispatcher. No long-lived plugin process; no channels protocol.
+ * The transport owns the queue + cancel-and-respawn pattern that gives
+ * papercup the "phone-call interrupt" UX. The actual spawn (binary,
+ * args, output parsing) is delegated to a per-session AgentBackend
+ * driver — one of claude-code, codex, gemini-cli, aider, opencode,
+ * crush, amp (see ./backends/).
  *
- * Mid-turn event injection (papercup's "phone-call" UX):
+ * Mid-turn event injection:
  *
  *   While a turn is in-flight, any pushEvent() call:
- *     1. Appends the new event's content to a per-session pendingPrompts queue
- *     2. SIGTERMs the in-flight child (process group)
- *     3. After exit, a fresh `claude -p` is spawned with a merged prompt
- *        containing the prior un-replied utterances followed by the new one
+ *     1. Appends the new event to a per-session pendingPrompts queue
+ *     2. SIGTERMs the in-flight backend via backend.cancel()
+ *     3. After the cancelled respond() rejects with "cancelled", a fresh
+ *        respond() is invoked with the merged prompt (prior un-replied
+ *        utterances + the new one, tagged so the agent knows the user
+ *        interrupted)
  *
- *   This means the user's interrupting utterance reaches the agent as part of
- *   the next prompt, with prior context that "the user interrupted while you
- *   were responding to:" + their previous utterance(s). The first turn always
- *   uses --session-id; subsequent turns use --resume.
- *
- * Permission relay isn't supported in per-turn mode — the CLI runs with
- * --dangerously-skip-permissions so it never asks.
+ * Permission relay isn't supported in per-turn mode — the driver runs with
+ * whatever bypass flag is appropriate for the CLI.
  */
 
 import { EventEmitter } from 'node:events'
-import { spawn, type ChildProcess } from 'node:child_process'
 import { makeLogger, type Logger } from '../log.ts'
 import type {
   SessionTransport,
@@ -34,25 +31,25 @@ import type {
   TransportInit,
   TransportName,
 } from './types.ts'
+import './backends/registry.ts'
+import type { AgentBackend, AgentBackendOpts } from './backends/registry.ts'
+import { createAgentBackend, listBackends } from './backends/registry.ts'
 
 type PerSessionState = {
   /** Pending events to flush into the next turn. Cleared when the merged
    *  prompt is built. */
   queue: SessionEvent[]
-  /** Currently-spawned `claude -p` child for this session, if any. */
-  inFlight?: ChildProcess
-  /** Resolves when the in-flight turn finishes. Used to serialize
-   *  "interrupt + restart" without races. */
-  inFlightPromise?: Promise<void>
-  /** Has this session been issued --session-id yet? If yes, future spawns
-   *  use --resume <id>. */
-  hasResumed: boolean
+  /** Backend driver for this session. Instantiated lazily on first event. */
+  backend?: AgentBackend
+  /** Backend name currently in use; if session.backend changes we must
+   *  rebuild. */
+  backendName?: string
+  /** Currently-running respond() promise, if any. */
+  inFlight?: Promise<void>
   /** Currently-applied runtime config; refreshed on every ensureRunning(). */
   cfg?: SessionRuntimeConfig
-  /** Discord channel currently bound — used to attach channelId to replies. */
+  /** Discord channel currently bound. */
   channelId?: string
-  stdoutBuf: string
-  stderrBuf: string
 }
 
 export class PerTurnTransport extends EventEmitter implements SessionTransport {
@@ -60,7 +57,7 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
   private states = new Map<string, PerSessionState>()
   private log: Logger
 
-  constructor(private init: TransportInit) {
+  constructor(_init: TransportInit) {
     super()
     this.log = makeLogger('transport:per-turn')
   }
@@ -77,21 +74,28 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
 
   ensureRunning(cfg: SessionRuntimeConfig): void {
     // Per-turn has no long-lived process to "ensure"; just stash the cfg
-    // for the next spawn.
+    // for the next spawn. If the backend changed, drop the old driver so
+    // we instantiate the new one on the next event.
     const s = this.getOrCreate(cfg.sessionId)
+    if (s.backendName && s.backendName !== cfg.backend) {
+      try { s.backend?.stop() } catch { /* best-effort */ }
+      s.backend = undefined
+      s.backendName = undefined
+    }
     s.cfg = cfg
-    if (cfg.resume) s.hasResumed = true
   }
 
   pushEvent(event: SessionEvent): boolean {
     const s = this.getOrCreate(event.sessionId)
     if (!s.channelId) s.channelId = event.channelId
     s.queue.push(event)
-    if (s.inFlight) {
-      // Mid-turn interrupt. Cancel the running child; the exit handler
-      // will pick up the queued event(s) and respawn.
-      this.log.info(`mid-turn interrupt: session=${event.sessionId} (queue=${s.queue.length})`)
-      this.killProcessGroup(s.inFlight)
+    if (s.inFlight && s.backend) {
+      // Mid-turn interrupt. Cancel the in-flight backend; the awaiting
+      // spawnTurn() will see the rejection, drain the queue, and respawn.
+      this.log.info(
+        `mid-turn interrupt: session=${event.sessionId} backend=${s.backendName} (queue=${s.queue.length})`,
+      )
+      try { s.backend.cancel?.() } catch { /* best-effort */ }
       return true
     }
     // No turn running — spawn now.
@@ -102,28 +106,26 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
   }
 
   resolvePermission(): boolean {
-    // No permission relay in per-turn mode.
     return false
   }
 
   cancel(sessionId: string): boolean {
     const s = this.states.get(sessionId)
-    if (!s?.inFlight) return false
-    this.killProcessGroup(s.inFlight)
+    if (!s?.backend) return false
     s.queue.length = 0
-    return true
+    return s.backend.cancel?.() ?? false
   }
 
   stopSession(sessionId: string): void {
     const s = this.states.get(sessionId)
     if (!s) return
-    if (s.inFlight) this.killProcessGroup(s.inFlight)
+    try { s.backend?.stop() } catch { /* best-effort */ }
     this.states.delete(sessionId)
   }
 
   isAlive(sessionId: string): boolean {
     const s = this.states.get(sessionId)
-    return !!s?.inFlight && s.inFlight.exitCode === null && !s.inFlight.killed
+    return !!s?.inFlight
   }
 
   isPluginOnline(_sessionId: string): boolean {
@@ -134,7 +136,7 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
 
   async shutdown(): Promise<void> {
     for (const [, s] of this.states) {
-      if (s.inFlight) this.killProcessGroup(s.inFlight)
+      try { s.backend?.stop() } catch { /* best-effort */ }
     }
     this.states.clear()
   }
@@ -167,16 +169,51 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
   private getOrCreate(sessionId: string): PerSessionState {
     let s = this.states.get(sessionId)
     if (!s) {
-      s = { queue: [], hasResumed: false, stdoutBuf: '', stderrBuf: '' }
+      s = { queue: [] }
       this.states.set(sessionId, s)
     }
     return s
   }
 
+  private async ensureBackend(sessionId: string, s: PerSessionState): Promise<AgentBackend | undefined> {
+    const cfg = s.cfg
+    if (!cfg) {
+      this.log.warn(`ensureBackend: no cfg for session ${sessionId}`)
+      return undefined
+    }
+    if (s.backend && s.backendName === cfg.backend) {
+      return s.backend
+    }
+    let backend: AgentBackend
+    try {
+      backend = createAgentBackend(cfg.backend)
+    } catch (err) {
+      this.log.error(
+        `unknown backend "${cfg.backend}" for session ${sessionId}. Known: ${listBackends().join(', ')}. err:`,
+        err,
+      )
+      return undefined
+    }
+    const opts: AgentBackendOpts = {
+      sessionId: cfg.sessionId,
+      resume: cfg.resume,
+      model: cfg.model,
+      effort: cfg.effort as AgentBackendOpts['effort'],
+      permissionMode: cfg.permissionMode,
+      // Channels-plugin runs all sessions as "text" mode — voice is just a
+      // meta tag now, not a separate toolset. The bot's voice-mode speaker
+      // pattern doesn't apply here.
+      mode: 'text',
+    }
+    await backend.start(opts)
+    s.backend = backend
+    s.backendName = cfg.backend
+    return backend
+  }
+
   /**
-   * Drain the queue into one merged prompt and run claude -p. After exit
-   * (clean or interrupted), if the queue has refilled during the run, loop
-   * and respawn.
+   * Drain the queue into one merged prompt and run the backend. On exit
+   * (success or interrupt), if the queue has refilled, loop and respawn.
    */
   private async spawnTurn(sessionId: string): Promise<void> {
     const s = this.states.get(sessionId)
@@ -184,153 +221,60 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
     if (s.queue.length === 0) return
     if (s.inFlight) return
 
-    const events = s.queue.splice(0, s.queue.length)
-    const prompt = buildPrompt(events)
-    const channelId = events[events.length - 1]?.channelId ?? s.channelId
-    if (!channelId) {
-      this.log.warn(`spawnTurn: no channelId for session ${sessionId}; dropping turn`)
-      return
-    }
+    const backend = await this.ensureBackend(sessionId, s)
+    if (!backend) return
 
-    const cfg = s.cfg
-    const args: string[] = [
-      '-p', prompt,
-      '--input-format', 'text',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--dangerously-skip-permissions',
-      '--disable-slash-commands',
-    ]
-    if (cfg?.permissionMode && cfg.permissionMode !== 'bypassPermissions') {
-      const i = args.indexOf('--dangerously-skip-permissions')
-      if (i >= 0) args.splice(i, 1)
-      args.push('--permission-mode', cfg.permissionMode)
-    }
-    if (s.hasResumed) {
-      args.push('--resume', sessionId)
-    } else {
-      args.push('--session-id', sessionId)
-    }
-    if (cfg?.model) args.push('--model', cfg.model)
-    if (cfg?.effort) args.push('--effort', cfg.effort)
-    if (this.init.projectDir) args.push('--add-dir', this.init.projectDir)
+    s.inFlight = (async () => {
+      while (s.queue.length > 0) {
+        const events = s.queue.splice(0, s.queue.length)
+        const prompt = buildPrompt(events)
+        const channelId = events[events.length - 1]?.channelId ?? s.channelId
+        if (!channelId) {
+          this.log.warn(`spawnTurn: no channelId for session ${sessionId}; dropping turn`)
+          break
+        }
 
-    this.log.info(
-      `spawn claude -p (session=${sessionId}, ${s.hasResumed ? 'resume' : 'first'}, model=${cfg?.model ?? 'default'}, prompt_len=${prompt.length})`,
-    )
-
-    const proc = spawn('claude', args, {
-      cwd: '/tmp',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
-      env: process.env,
-    })
-    s.inFlight = proc
-    s.stdoutBuf = ''
-    s.stderrBuf = ''
-
-    let lineBuf = ''
-    let usage: { inputTokens: number; outputTokens: number } | undefined
-    let replyText = ''
-
-    proc.stdout?.on('data', (c: Buffer) => {
-      const chunk = c.toString('utf8')
-      s.stdoutBuf += chunk
-      lineBuf += chunk
-      let nl: number
-      while ((nl = lineBuf.indexOf('\n')) !== -1) {
-        const line = lineBuf.slice(0, nl)
-        lineBuf = lineBuf.slice(nl + 1)
-        if (!line.trim()) continue
+        this.log.info(
+          `respond start: session=${sessionId} backend=${s.backendName} prompt_len=${prompt.length}`,
+        )
         try {
-          const ev = JSON.parse(line) as {
-            type?: string
-            message?: { content?: Array<{ type?: string; text?: string }> }
-            result?: string
-            usage?: { input_tokens?: number; output_tokens?: number }
-          }
-          if (ev.type === 'assistant' && Array.isArray(ev.message?.content)) {
-            for (const block of ev.message.content) {
-              if (block?.type === 'text' && typeof block.text === 'string') {
-                replyText += block.text
-              }
-            }
-          }
-          if (ev.type === 'result') {
-            if (typeof ev.result === 'string') replyText = ev.result
-            if (ev.usage) {
-              usage = {
-                inputTokens: Number(ev.usage.input_tokens ?? 0),
-                outputTokens: Number(ev.usage.output_tokens ?? 0),
-              }
-            }
-          }
-        } catch {
-          // best-effort parse
-        }
-      }
-    })
-    proc.stderr?.on('data', (c: Buffer) => {
-      s.stderrBuf += c.toString('utf8')
-    })
+          const reply = await backend.respond(prompt)
+          if (s.cfg) s.cfg = { ...s.cfg, resume: true }
 
-    s.inFlightPromise = new Promise<void>(resolve => {
-      proc.on('exit', (code, signal) => {
-        const interrupted = code === null || signal === 'SIGTERM' || signal === 'SIGKILL'
-        s.inFlight = undefined
-        s.inFlightPromise = undefined
-        // First-spawn handshake: future spawns must use --resume.
-        s.hasResumed = true
-
-        if (interrupted) {
-          this.log.info(
-            `per-turn: claude interrupted (session=${sessionId}, signal=${signal}); ` +
-            `queue=${s.queue.length}`,
-          )
-        } else if (code !== 0) {
-          this.log.warn(
-            `per-turn: claude exited code=${code} (session=${sessionId}). stderr: ` +
-            s.stderrBuf.slice(0, 500),
-          )
-        }
-
-        if (!interrupted && code === 0 && replyText.trim().length > 0) {
+          if (reply.text.trim().length > 0) {
+            this.emit('reply', {
+              sessionId,
+              channelId,
+              msgId: `pt-${Date.now()}`,
+              text: reply.text.trim(),
+            })
+          }
+          if (reply.inputTokens > 0 || reply.outputTokens > 0) {
+            this.emit('turnComplete', {
+              sessionId,
+              usage: { inputTokens: reply.inputTokens, outputTokens: reply.outputTokens },
+            })
+          }
+        } catch (err) {
+          const msg = (err as Error).message
+          if (msg === 'cancelled') {
+            this.log.info(`respond cancelled (session=${sessionId}); queue=${s.queue.length}`)
+            continue
+          }
+          this.log.warn(`respond failed (session=${sessionId} backend=${s.backendName}): ${msg}`)
           this.emit('reply', {
             sessionId,
             channelId,
-            msgId: `pt-${Date.now()}`,
-            text: replyText.trim(),
+            msgId: `pt-err-${Date.now()}`,
+            text: `❌ Backend error: ${msg}`,
           })
-          if (usage) this.emit('turnComplete', { sessionId, usage })
         }
-        this.emit('sessionExited', sessionId, code, signal)
-
-        // If new events queued during the run, spawn again with the merged prompt.
-        if (s.queue.length > 0) {
-          void this.spawnTurn(sessionId).catch(err =>
-            this.log.error(`respawn failed (session=${sessionId}):`, err),
-          )
-        }
-        resolve()
-      })
-      proc.on('error', err => {
-        this.log.error(`per-turn spawn error (session=${sessionId}):`, err)
-        s.inFlight = undefined
-        s.inFlightPromise = undefined
-        resolve()
-      })
+      }
+    })().finally(() => {
+      s.inFlight = undefined
     })
 
-    await s.inFlightPromise
-  }
-
-  private killProcessGroup(proc: ChildProcess): void {
-    if (!proc.pid) return
-    try {
-      process.kill(-proc.pid, 'SIGTERM')
-    } catch {
-      try { proc.kill('SIGTERM') } catch { /* already dead */ }
-    }
+    await s.inFlight
   }
 }
 
