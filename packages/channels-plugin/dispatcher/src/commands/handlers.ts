@@ -11,15 +11,27 @@
  */
 
 import {
+  AutocompleteInteraction,
   ChatInputCommandInteraction,
   GuildMember,
   MessageFlags,
   PermissionFlagsBits,
 } from 'discord.js'
 import type { CommandContext } from './types.ts'
-import type { SessionTransportName } from '../state/sessions.ts'
+import type { SessionEffort, SessionTransportName } from '../state/sessions.ts'
 import { compactSession } from '../compact.ts'
 import { listByBackend, KNOWN_BACKENDS } from '../state/model-catalog.ts'
+
+/**
+ * Voice-mode defaults — applied by /pickup when the operator omits a flag.
+ * Override per-deployment via env. Hardcoded fallbacks bias toward "fast
+ * conversational" (gemini-flash + per-turn + minimal effort) because round-
+ * trip latency matters more than reasoning depth in voice.
+ */
+const VOICE_DEFAULT_BACKEND = process.env.PAPERCUP_VOICE_DEFAULT_BACKEND ?? 'gemini-cli'
+const VOICE_DEFAULT_MODEL = process.env.PAPERCUP_VOICE_DEFAULT_MODEL ?? 'gemini-2.5-flash'
+const VOICE_DEFAULT_TRANSPORT = (process.env.PAPERCUP_VOICE_DEFAULT_TRANSPORT ?? 'per-turn') as SessionTransportName
+const VOICE_DEFAULT_EFFORT = process.env.PAPERCUP_VOICE_DEFAULT_EFFORT as SessionEffort | undefined
 
 export async function handleBind(
   interaction: ChatInputCommandInteraction,
@@ -729,4 +741,189 @@ export async function handleCompact(
     reboundLine +
     previewBlock,
   )
+}
+
+/**
+ * Discord-side autocomplete for any slash-command string option that wants
+ * backend-aware model suggestions. Fires per keystroke (Discord debounces);
+ * must respond within 3s. Returns ≤25 suggestions matching the user's
+ * partial input. Looks up the relevant backend from:
+ *   1. The interaction's own `backend:` option (for /pickup)
+ *   2. The bound session's backend (for /model)
+ *   3. The voice default (for /pickup if no session and no backend chosen yet)
+ *
+ * Backends without curated entries (aider, opencode, …) return empty —
+ * Discord shows nothing, user types freely. /model name:<anything> still
+ * passes through to the underlying CLI.
+ */
+export async function handleAutocomplete(
+  interaction: AutocompleteInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  try {
+    const focused = interaction.options.getFocused(true)
+    if (focused.name !== 'name' && focused.name !== 'model') {
+      await interaction.respond([])
+      return
+    }
+    let backend: string | undefined = interaction.options.getString('backend') ?? undefined
+    if (!backend) {
+      backend = ctx.sessions.findLatestForChannel(interaction.channelId)?.backend
+    }
+    if (!backend && interaction.commandName === 'pickup') {
+      backend = VOICE_DEFAULT_BACKEND
+    }
+    if (!backend) {
+      await interaction.respond([])
+      return
+    }
+    const partial = String(focused.value).toLowerCase()
+    const choices = listByBackend(backend)
+      .filter(m => !partial || m.id.toLowerCase().includes(partial))
+      .slice(0, 25)
+      .map(m => ({ name: `${m.id} · ${m.provider}/${m.family}`, value: m.id }))
+    await interaction.respond(choices)
+  } catch (err) {
+    // Autocomplete failures must never throw — Discord just shows no
+    // suggestions and the user types freely.
+    console.error('[commands] autocomplete error:', err)
+    try { await interaction.respond([]) } catch { /* ignore */ }
+  }
+}
+
+/**
+ * /pickup — voice-first one-step combining /bind + /voice-join.
+ *
+ * Resolves or creates a session for the current text channel, applies any
+ * config args (or voice-mode defaults via PAPERCUP_VOICE_DEFAULT_*), and
+ * joins the user's voice channel. Mirrors the legacy bot's /pickup flow:
+ * user sits in a voice channel, calls /pickup in a text channel, bot
+ * answers. The text channel becomes the session's home channel too — text
+ * messages there continue routing to the same session even after /hangup.
+ */
+export async function handlePickup(
+  interaction: ChatInputCommandInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+
+  if (!ctx.voice) {
+    await interaction.editReply(
+      '🔇 Voice is unavailable — the Whisper sidecar failed to start at boot. Check dispatcher logs.',
+    )
+    return
+  }
+  if (!interaction.guild || !interaction.guildId) {
+    await interaction.editReply('Not in a guild.')
+    return
+  }
+  const member = interaction.member
+  if (!(member instanceof GuildMember)) {
+    await interaction.editReply("Couldn't resolve your guild membership.")
+    return
+  }
+  const voiceChannel = member.voice.channel
+  if (!voiceChannel) {
+    await interaction.editReply('Join a voice channel first, then call `/pickup`.')
+    return
+  }
+  if (ctx.voice.has(interaction.guildId)) {
+    await interaction.editReply('Already on a voice line in this guild. Run `/hangup` first.')
+    return
+  }
+
+  // Pull args + apply defaults.
+  const transport = (interaction.options.getString('transport') ?? VOICE_DEFAULT_TRANSPORT) as SessionTransportName
+  const backend = interaction.options.getString('backend') ?? VOICE_DEFAULT_BACKEND
+  const model = interaction.options.getString('model') ?? VOICE_DEFAULT_MODEL
+  const effort = (interaction.options.getString('effort') ?? VOICE_DEFAULT_EFFORT) as SessionEffort | undefined
+
+  // Reject channels+non-claude up front (matches /bind validation).
+  if (transport === 'channels' && backend !== 'claude-code') {
+    await interaction.editReply(
+      `❌ Channels transport is claude-only. Use \`transport:per-turn\` with backend \`${backend}\`.`,
+    )
+    return
+  }
+  if (transport === 'channels' && !ctx.channelsAvailable()) {
+    await interaction.editReply(
+      `❌ \`transport:channels\` requires **tmux** on this host (not installed). Use \`transport:per-turn\`.`,
+    )
+    return
+  }
+
+  // Resolve-or-create the session for this text channel.
+  const channelId = interaction.channelId
+  let session = ctx.sessions.findLatestForChannel(channelId)
+  if (!session) {
+    session = await ctx.sessions.create({ channelId, transport, backend })
+  } else {
+    // Apply requested overrides to an existing session — same logic as /bind.
+    if (transport !== session.transport) {
+      ctx.killFor(session.id)
+      const u = await ctx.sessions.setTransport(session.id, transport)
+      if (u) session = u
+    }
+    if (backend !== session.backend) {
+      ctx.killFor(session.id)
+      const u = await ctx.sessions.setBackend(session.id, backend)
+      if (u) session = u
+    }
+  }
+
+  // Model/effort overrides (always apply if specified — these don't require
+  // child kill since they take effect on next respawn).
+  if (model && session.model !== model) {
+    const u = await ctx.sessions.setModel(session.id, model)
+    if (u) session = u
+  }
+  if (effort !== undefined && session.effort !== effort) {
+    const u = await ctx.sessions.setEffort(session.id, effort)
+    if (u) session = u
+  }
+
+  // Persist the channel binding so subsequent text messages here route to
+  // the same session (and the guild-config knows this channel is bot-served).
+  await ctx.sessions.setChannelId(session.id, channelId)
+  await ctx.guildConfig.addBoundChannel(interaction.guildId, channelId)
+
+  // Join the voice channel.
+  try {
+    await ctx.voice.join({
+      sessionId: session.id,
+      guildId: interaction.guildId,
+      voiceChannelId: voiceChannel.id,
+      textChannelId: channelId,
+      userId: member.id,
+      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+    })
+  } catch (err) {
+    await interaction.editReply(`❌ ${(err as Error).message}`)
+    return
+  }
+
+  ctx.spawnFor(session)
+  void ctx.sessions.touch(session.id)
+  console.log(
+    `[pickup] guild ${interaction.guildId} voice=${voiceChannel.name} text=${channelId} ` +
+    `→ session "${session.name}" (transport=${session.transport} backend=${session.backend} ` +
+    `model=${session.model ?? '(default)'} effort=${session.effort ?? '(default)'}) by ${member.user.tag}`,
+  )
+  await interaction.editReply(
+    `📞 **Picked up** — joined **${voiceChannel.name}**, bound to session **${session.name}**.\n` +
+    `\`transport=${session.transport}\` · \`backend=${session.backend}\` · \`model=${session.model ?? '(default)'}\` · \`effort=${session.effort ?? '(default)'}\`\n` +
+    `Speak to talk; replies post here + TTS to voice. \`/hangup\` to end the call (text session preserved).`,
+  )
+}
+
+/**
+ * /hangup — alias for /voice-leave. Bot disconnects from voice but the
+ * text-channel binding (and the session) are preserved. Symmetry with
+ * /pickup makes the phone-call mental model legible.
+ */
+export async function handleHangup(
+  interaction: ChatInputCommandInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  await handleVoiceLeave(interaction, ctx)
 }

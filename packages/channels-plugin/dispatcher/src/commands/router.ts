@@ -16,6 +16,9 @@ import {
   handleTransport,
   handleBackend,
   handleModels,
+  handleAutocomplete,
+  handlePickup,
+  handleHangup,
 } from './handlers.ts'
 import type { CommandContext } from './types.ts'
 
@@ -53,6 +56,10 @@ export async function dispatchInteraction(
         components: [],
       })
       .catch(() => {})
+    return
+  }
+  if (interaction.isAutocomplete()) {
+    await handleAutocomplete(interaction, ctx)
     return
   }
   if (!interaction.isChatInputCommand()) return
@@ -105,6 +112,12 @@ export async function dispatchInteraction(
         return
       case 'models':
         await handleModels(interaction, ctx)
+        return
+      case 'pickup':
+        await handlePickup(interaction, ctx)
+        return
+      case 'hangup':
+        await handleHangup(interaction, ctx)
         return
       default:
         if (interaction.deferred || interaction.replied) return

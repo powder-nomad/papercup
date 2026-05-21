@@ -116,13 +116,13 @@ const commands = [
     .toJSON(),
   new SlashCommandBuilder()
     .setName('model')
-    .setDescription('Set the claude model for this channel\'s session (e.g. sonnet, opus, haiku).')
+    .setDescription('Set the model for this channel\'s session. Suggestions are backend-aware.')
     .addStringOption(o =>
       o
         .setName('name')
-        .setDescription('Model alias or full id. Leave blank to clear override.')
+        .setDescription('Model id. Type to see suggestions for this channel\'s backend, or leave blank to clear.')
         .setRequired(false)
-        .setMaxLength(80),
+        .setAutocomplete(true),
     )
     .toJSON(),
   new SlashCommandBuilder()
@@ -224,6 +224,60 @@ const commands = [
         .setRequired(true)
         .setMaxLength(60),
     )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('pickup')
+    .setDescription('Bot joins your voice channel + binds this text channel. One-step /bind + /voice-join.')
+    .addStringOption(o =>
+      o
+        .setName('backend')
+        .setDescription('Backend agent CLI. Defaults to PAPERCUP_VOICE_DEFAULT_BACKEND or gemini-cli.')
+        .setRequired(false)
+        .addChoices(
+          { name: 'claude-code', value: 'claude-code' },
+          { name: 'codex', value: 'codex' },
+          { name: 'gemini-cli (voice default)', value: 'gemini-cli' },
+          { name: 'aider', value: 'aider-cli' },
+          { name: 'opencode', value: 'opencode-cli' },
+          { name: 'crush', value: 'crush-cli' },
+          { name: 'amp', value: 'amp-cli' },
+        ),
+    )
+    .addStringOption(o =>
+      o
+        .setName('model')
+        .setDescription('Model id. Type to see suggestions for the chosen backend.')
+        .setRequired(false)
+        .setAutocomplete(true),
+    )
+    .addStringOption(o =>
+      o
+        .setName('effort')
+        .setDescription('Reasoning effort (ignored by non-claude backends).')
+        .setRequired(false)
+        .addChoices(
+          { name: 'minimal (voice default)', value: 'minimal' },
+          { name: 'low', value: 'low' },
+          { name: 'medium', value: 'medium' },
+          { name: 'high', value: 'high' },
+          { name: 'xhigh (Opus only)', value: 'xhigh' },
+          { name: 'max (Opus only)', value: 'max' },
+        ),
+    )
+    .addStringOption(o =>
+      o
+        .setName('transport')
+        .setDescription('Transport mode. Defaults to PAPERCUP_VOICE_DEFAULT_TRANSPORT or per-turn (better for voice).')
+        .setRequired(false)
+        .addChoices(
+          { name: 'per-turn (voice default — phone-call interrupts)', value: 'per-turn' },
+          { name: 'channels (long-lived; warm cache, slower cold start)', value: 'channels' },
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('hangup')
+    .setDescription('Bot leaves the voice channel. Alias for /voice-leave (text session preserved).')
     .toJSON(),
 ]
 
