@@ -19,6 +19,7 @@ import { EventEmitter } from 'node:events'
 import { ClaudeChildManager } from '../claude-children.ts'
 import { UdsServer } from '../uds-server.ts'
 import { makeLogger, type Logger } from '../log.ts'
+import type { DispatcherToPlugin } from '../ipc.ts'
 import type {
   SessionTransport,
   SessionTransportEvents,
@@ -52,6 +53,16 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
   private allowlistCheck: AllowlistCheck = () => true
   private udsStarted = false
   private readonly tmuxAvailable: boolean
+  /**
+   * Per-session FIFO of inbound events that arrived before the plugin's UDS
+   * handshake completed. Cold spawn under tmux takes ~2-3s (claude boot +
+   * dialog auto-accept + bun plugin connect); without this queue, the first
+   * message after every reaper-driven respawn gets dropped at the "transport
+   * not yet ready" check. Drained on the next `helloReceived` for the
+   * session. Capped at MAX_QUEUED_EVENTS — overflow drops the oldest frame.
+   */
+  private pendingEvents = new Map<string, DispatcherToPlugin[]>()
+  private static readonly MAX_QUEUED_EVENTS = 20
 
   constructor(private init: TransportInit) {
     super()
@@ -139,13 +150,32 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
   }
 
   pushEvent(event: SessionEvent): boolean {
-    return this.uds.sendTo(event.sessionId, {
+    const frame: DispatcherToPlugin = {
       type: 'event',
       session: event.sessionId,
       chat_id: event.channelId,
       content: event.content,
       meta: event.meta,
-    })
+    }
+    if (this.uds.isConnected(event.sessionId)) {
+      return this.uds.sendTo(event.sessionId, frame)
+    }
+    // Plugin not connected yet (cold respawn). Queue and drain on hello.
+    const queue = this.pendingEvents.get(event.sessionId) ?? []
+    queue.push(frame)
+    while (queue.length > ChannelsTransport.MAX_QUEUED_EVENTS) {
+      queue.shift()
+      this.log.warn(
+        `event queue overflow (session=${event.sessionId}); dropping oldest frame ` +
+        `(cap=${ChannelsTransport.MAX_QUEUED_EVENTS})`,
+      )
+    }
+    this.pendingEvents.set(event.sessionId, queue)
+    this.log.info(
+      `queued event (session=${event.sessionId}, queue=${queue.length}) — ` +
+      `plugin not yet connected, will flush on hello`,
+    )
+    return true
   }
 
   resolvePermission(
@@ -182,6 +212,7 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
   stopSession(sessionId: string): void {
     this.claude.kill(sessionId)
     this.sessionChannelIds.delete(sessionId)
+    this.pendingEvents.delete(sessionId)
     for (const [rid, p] of this.pendingPermissions) {
       if (p.sessionId === sessionId) this.pendingPermissions.delete(rid)
     }
@@ -246,6 +277,21 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
 
     this.uds.on('helloReceived', (session, pid) => {
       this.log.info(`plugin online: session=${session}, pid=${pid}`)
+      // Drain any events queued during the spawn-to-handshake gap.
+      const queue = this.pendingEvents.get(session)
+      if (!queue || queue.length === 0) return
+      this.pendingEvents.delete(session)
+      this.log.info(`draining ${queue.length} queued event(s) for session=${session}`)
+      for (const frame of queue) {
+        const ok = this.uds.sendTo(session, frame)
+        if (!ok) {
+          this.log.warn(
+            `drain failed (session=${session}); plugin connection gone mid-flush. ` +
+            `${queue.indexOf(frame)} of ${queue.length} delivered before stop.`,
+          )
+          break
+        }
+      }
     })
 
     this.uds.on('pluginDisconnected', session => {
