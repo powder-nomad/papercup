@@ -57,12 +57,36 @@ export class GeminiCliBackend extends BaseCliBackend {
       args.push("--resume", this.sessionId);
     }
 
-    const { stdout, elapsedMs } = await this.runChild({
-      binary,
-      args,
-      cwd,
-      userText,
-    });
+    let stdout: string;
+    let elapsedMs: number;
+    try {
+      const r = await this.runChild({ binary, args, cwd, userText });
+      stdout = r.stdout;
+      elapsedMs = r.elapsedMs;
+    } catch (err) {
+      // Recovery path: gemini persists sessions only after a successful turn
+      // completes. If the very first `--session-id <uuid>` spawn crashed,
+      // network-blipped, or got SIGTERM'd before persistence, every
+      // subsequent `--resume <uuid>` returns "Invalid session identifier"
+      // forever. Detect that, downgrade to a fresh --session-id under the
+      // same uuid, and retry once. Prior turns are lost (gemini never saved
+      // them) but the session functionally recovers.
+      const msg = (err as Error).message;
+      const recoverable = !this.firstTurn && /Invalid session identifier|Error resuming session/i.test(msg);
+      if (!recoverable) throw err;
+      console.warn(
+        `[backend:gemini-cli] resume failed for session=${this.sessionId} — ` +
+        `gemini has no record of it (likely crashed before first turn persisted). ` +
+        `Restarting under same uuid with --session-id; prior turns lost.`,
+      );
+      this.firstTurn = true;
+      // Rebuild args: replace the `--resume <uuid>` pair with `--session-id <uuid>`.
+      const resumeIdx = args.indexOf("--resume");
+      if (resumeIdx >= 0) args.splice(resumeIdx, 2, "--session-id", this.sessionId);
+      const r2 = await this.runChild({ binary, args, cwd, userText });
+      stdout = r2.stdout;
+      elapsedMs = r2.elapsedMs;
+    }
 
     let text = stdout.trim();
     let inputTokens = 0;
