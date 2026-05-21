@@ -57,6 +57,16 @@ type ChannelsTransportLike = {
   unbindChannel?: (sessionId: string) => void
 }
 
+// Cwd we always spawn claude with (see claude-children.ts `-c /tmp`).
+// Claude maps cwd → ~/.claude/projects/<encoded-cwd>/, replacing "/" with "-".
+const CLAUDE_PROJECT_CWD = '/tmp'
+const CLAUDE_PROJECT_DIR_NAME = '-' + CLAUDE_PROJECT_CWD.replace(/^\/+/, '').replace(/\//g, '-')
+
+function claudeSessionPersisted(sessionId: string): boolean {
+  const path = join(homedir(), '.claude', 'projects', CLAUDE_PROJECT_DIR_NAME, `${sessionId}.jsonl`)
+  return existsSync(path)
+}
+
 async function main(): Promise<void> {
   const token = process.env.DISCORD_BOT_TOKEN
   if (!token) throw new Error('DISCORD_BOT_TOKEN not set')
@@ -124,9 +134,13 @@ async function main(): Promise<void> {
   }
 
   // Sessions we've already issued `--session-id` for during this dispatcher
-  // process lifetime; subsequent respawns use `--resume`. Persisted-on-disk
-  // sessions also need this on first re-spawn after dispatcher restart.
-  const everSpawned = new Set<string>(sessions.list().map(s => s.id))
+  // process lifetime; subsequent respawns use `--resume`. Starts empty —
+  // we re-derive `resume` per spawn by also checking whether claude has
+  // actually persisted the session to disk (see spawnFor). A session that
+  // exists in sessions.json but was reaped before any prompt was sent will
+  // NOT be in claude's project store, so `--resume` would die silently
+  // (claude exits when --resume can't find the session, killing tmux).
+  const everSpawned = new Set<string>()
 
   log.info(
     `boot: home=${papercupHome}, sessions=${sessions.list().length}, plugin=${pluginDir}, allowlist=${allowedUserIds.size > 0 ? `${allowedUserIds.size} users` : 'open'}`,
@@ -151,13 +165,19 @@ async function main(): Promise<void> {
       ;(transport as unknown as ChannelsTransportLike).bindChannel?.(session.id, session.channelId)
     }
     contextWarnTier.delete(session.id)
+    // Resume only when (a) we've spawned this session before in this
+    // process and (b) claude has actually persisted the session to disk.
+    // Resuming an un-persisted session makes `claude --resume` exit
+    // silently with "session not found", which kills tmux and leaves the
+    // dispatcher waiting forever for a plugin hello that never comes.
+    const resume = everSpawned.has(session.id) && claudeSessionPersisted(session.id)
     transport.ensureRunning({
       sessionId: session.id,
       backend: session.backend,
       model: session.model,
       effort: session.effort,
       permissionMode: session.permissionMode,
-      resume: everSpawned.has(session.id),
+      resume,
     })
     everSpawned.add(session.id)
   }
