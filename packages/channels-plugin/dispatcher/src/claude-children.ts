@@ -126,9 +126,32 @@ export class ClaudeChildManager {
       '--strict-mcp-config',
       '--mcp-config', mcpConfigPath,
       '--dangerously-load-development-channels', 'server:papercup-channels',
-      '--disable-slash-commands',
+      // Slash commands ARE enabled for channels (unlike per-turn, where each
+      // call pays the ~30KB skill_listing cost). Channels spawns once and
+      // resumes; the blob attaches once per process lifetime, so the cache
+      // economy doesn't apply. Users can /skill-name normally inside the
+      // session.
+      //
+      // Block AskUserQuestion specifically: it renders an arrow-key picker
+      // in claude's TUI. Inside our headless tmux session there's no human
+      // at the keyboard, so claude would wait forever. (Bridging the picker
+      // to Discord with a structured payload is doable but not worth the
+      // complexity right now.) Same rationale for plan mode below.
+      '--disallowedTools', 'AskUserQuestion',
     ]
-    if (opts.permissionMode) {
+    if (opts.permissionMode === 'plan') {
+      // Plan mode opens an interactive "Approve plan? [y/N]" prompt at the
+      // TTY that has the same no-human-at-keyboard problem as
+      // AskUserQuestion. Refuse it loudly here so we don't ship a session
+      // that silently hangs — /permissions also gates this at request time
+      // for channels sessions.
+      this.log.warn(
+        `channels transport ignoring permissionMode=plan for session=${opts.sessionId} ` +
+        `(plan-approval prompt requires interactive TTY). Falling back to ` +
+        `--dangerously-skip-permissions.`,
+      )
+      claudeArgs.push('--dangerously-skip-permissions')
+    } else if (opts.permissionMode) {
       claudeArgs.push('--permission-mode', opts.permissionMode)
     } else {
       claudeArgs.push('--dangerously-skip-permissions')

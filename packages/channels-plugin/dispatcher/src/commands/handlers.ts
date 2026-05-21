@@ -376,6 +376,20 @@ export async function handlePermissions(
   if (!target) return
 
   const mode = interaction.options.getString('mode', true)
+  // Plan mode opens an interactive "Approve plan? [y/N]" prompt at the
+  // claude TTY. Channels-transport claude runs inside a detached tmux
+  // session with no human at the keyboard, so plan mode would hang the
+  // turn indefinitely. AskUserQuestion is blocked at spawn (--disallowedTools);
+  // plan mode is gated here at the command layer so the user gets a clear
+  // error instead of a silent hang.
+  if (mode === 'plan' && target.transport === 'channels') {
+    await interaction.editReply(
+      `❌ Plan mode opens an interactive "Approve plan?" prompt at the terminal, ` +
+      `which channels-transport sessions (running inside detached tmux) cannot answer. ` +
+      `Switch this session to \`transport:per-turn\` first, or pick a different permission mode.`,
+    )
+    return
+  }
   const value = mode === 'default-for-mode'
     ? undefined
     : (mode as NonNullable<typeof target.permissionMode>)
