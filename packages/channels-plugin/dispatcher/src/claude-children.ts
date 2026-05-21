@@ -74,6 +74,16 @@ export type ClaudeChildOpts = {
   /** Kept for API stability but never invoked in tmux-supervised channels mode —
    *  claude doesn't emit stream-json `result` events without --print mode. */
   onTurnComplete?: (usage: { inputTokens: number; outputTokens: number }) => void
+  /**
+   * Called when bootstrap dialogs (trust + dev-channels) have all been
+   * answered and claude is ready to consume MCP channel notifications.
+   * ChannelsTransport hooks this to drain any inbound events that were
+   * queued during the spawn-to-handshake gap — draining earlier (on plugin
+   * hello) lands events while claude is still on the dev-channels modal,
+   * and claude silently drops them. The callback fires exactly once per
+   * spawn, even if no dialogs needed answering.
+   */
+  onChannelReady?: () => void
 }
 
 type Tracked = {
@@ -205,7 +215,7 @@ export class ClaudeChildManager {
         // by sending `1` + Enter ONLY if we detect the dialog text — guards
         // against accidentally injecting "1" as a user prompt for resumed
         // sessions where the dialog doesn't appear.
-        setTimeout(() => this.maybeAcceptTrustDialog(opts.sessionId, sessionName), 1500)
+        setTimeout(() => this.maybeAcceptTrustDialog(opts.sessionId, sessionName, opts.onChannelReady), 1500)
       } else {
         this.log.error(
           `tmux new-session failed (session=${opts.sessionId}, exit=${code}). stderr: ${stderrBuf.trim().slice(0, 500)}`,
@@ -249,13 +259,25 @@ export class ClaudeChildManager {
    * a dialog in two consecutive polls, we exit early — claude has moved past
    * the bootstrap dialogs.
    */
-  private maybeAcceptTrustDialog(sessionId: string, sessionName: string): void {
+  private maybeAcceptTrustDialog(
+    sessionId: string,
+    sessionName: string,
+    onChannelReady?: () => void,
+  ): void {
     const TRUST_POLL_MS = 10_000
     const INTERVAL_MS = 500
     const deadline = Date.now() + TRUST_POLL_MS
     let seenDialogAt = 0
     let acceptedCount = 0
     const lastAccepted = new Map<string, number>()
+    let readyFired = false
+    const fireReady = (): void => {
+      if (readyFired) return
+      readyFired = true
+      try { onChannelReady?.() } catch (err) {
+        this.log.warn(`onChannelReady callback threw (session=${sessionId}):`, err)
+      }
+    }
 
     const tick = (): void => {
       if (Date.now() > deadline) {
@@ -264,6 +286,9 @@ export class ClaudeChildManager {
             `bootstrap dialogs done (session=${sessionId}, accepted=${acceptedCount})`,
           )
         }
+        // Even if we never saw a dialog, claude has had 10s to boot. Signal
+        // ready so ChannelsTransport can drain any queued events.
+        fireReady()
         return
       }
       // If we saw a dialog ≥1.5s ago and nothing new, assume bootstrap is done.
@@ -271,6 +296,18 @@ export class ClaudeChildManager {
         this.log.info(
           `bootstrap dialogs done (session=${sessionId}, accepted=${acceptedCount})`,
         )
+        fireReady()
+        return
+      }
+      // Resume-spawns of already-trusted sessions show NO dialogs at all.
+      // After 2s of polling without seeing one, declare ready so we don't
+      // sit on queued events for the full 10s deadline.
+      const elapsed = TRUST_POLL_MS - (deadline - Date.now())
+      if (acceptedCount === 0 && elapsed > 2000) {
+        this.log.info(
+          `bootstrap dialogs done (session=${sessionId}, no dialogs seen in ${Math.floor(elapsed)}ms)`,
+        )
+        fireReady()
         return
       }
       const cap = spawnSync('tmux', ['capture-pane', '-p', '-t', sessionName], {

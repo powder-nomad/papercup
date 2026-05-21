@@ -146,6 +146,7 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
       onTurnComplete: usage => {
         this.emit('turnComplete', { sessionId: cfg.sessionId, usage })
       },
+      onChannelReady: () => this.drainQueuedEvents(cfg.sessionId),
     })
   }
 
@@ -257,6 +258,36 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
     return super.emit(event, ...args)
   }
 
+  /**
+   * Called by ClaudeChildManager when bootstrap dialogs have all been
+   * answered and claude is ready to consume channel notifications. Drains
+   * any events queued in pushEvent() during the spawn boot window into the
+   * (now-ready) plugin in FIFO order.
+   */
+  private drainQueuedEvents(sessionId: string): void {
+    const queue = this.pendingEvents.get(sessionId)
+    if (!queue || queue.length === 0) return
+    if (!this.uds.isConnected(sessionId)) {
+      this.log.warn(
+        `onChannelReady fired but plugin not connected (session=${sessionId}); ` +
+        `keeping ${queue.length} queued event(s) for the next handshake`,
+      )
+      return
+    }
+    this.pendingEvents.delete(sessionId)
+    this.log.info(`draining ${queue.length} queued event(s) for session=${sessionId}`)
+    for (let i = 0; i < queue.length; i++) {
+      const ok = this.uds.sendTo(sessionId, queue[i]!)
+      if (!ok) {
+        this.log.warn(
+          `drain failed (session=${sessionId}); plugin connection gone mid-flush. ` +
+          `${i} of ${queue.length} delivered before stop.`,
+        )
+        break
+      }
+    }
+  }
+
   private wireUds(): void {
     this.uds.on('reply', frame => {
       const expected = this.sessionChannelIds.get(frame.session)
@@ -277,21 +308,12 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
 
     this.uds.on('helloReceived', (session, pid) => {
       this.log.info(`plugin online: session=${session}, pid=${pid}`)
-      // Drain any events queued during the spawn-to-handshake gap.
-      const queue = this.pendingEvents.get(session)
-      if (!queue || queue.length === 0) return
-      this.pendingEvents.delete(session)
-      this.log.info(`draining ${queue.length} queued event(s) for session=${session}`)
-      for (const frame of queue) {
-        const ok = this.uds.sendTo(session, frame)
-        if (!ok) {
-          this.log.warn(
-            `drain failed (session=${session}); plugin connection gone mid-flush. ` +
-            `${queue.indexOf(frame)} of ${queue.length} delivered before stop.`,
-          )
-          break
-        }
-      }
+      // NOTE: we deliberately do NOT drain pending events here. The plugin
+      // connects to UDS early in claude's boot, often before claude has
+      // answered the dev-channels approval modal. Notifications sent during
+      // that window are silently dropped by claude's channel system. Instead,
+      // ClaudeChildManager fires onChannelReady (→ drainQueuedEvents) only
+      // after the bootstrap-dialog poller declares done.
     })
 
     this.uds.on('pluginDisconnected', session => {
