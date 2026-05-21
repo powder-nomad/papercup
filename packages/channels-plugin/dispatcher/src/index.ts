@@ -33,6 +33,7 @@ import { createTts, type TtsEngine } from '@papercup/voice-stack/tts'
 import { TransportRegistry } from './transports/registry.ts'
 import { ChannelsTransport } from './transports/channels.ts'
 import type { SessionTransport, ReplyEvent, PermissionRequestEvent, TurnCompleteEvent } from './transports/types.ts'
+import { defaultLocale, t } from './i18n.ts'
 
 const log = makeLogger('dispatcher')
 
@@ -264,17 +265,18 @@ async function main(): Promise<void> {
   const onTurnComplete = (e: TurnCompleteEvent): void => {
     const channelId = sessions.findById(e.sessionId)?.channelId
     if (!channelId) return
+    const kTokens = (e.usage.inputTokens / 1000).toFixed(0)
     if (e.usage.inputTokens >= CONTEXT_DANGER_TOKENS && contextWarnTier.get(e.sessionId) !== 'danger') {
       contextWarnTier.set(e.sessionId, 'danger')
       void discord.postNotice(
         channelId,
-        `🛑 **Context danger zone** — ${(e.usage.inputTokens / 1000).toFixed(0)}k input tokens used. Compact or start a fresh session soon.`,
+        t(defaultLocale(), 'notice.contextDanger', { kTokens }),
       )
     } else if (e.usage.inputTokens >= CONTEXT_WARN_TOKENS && !contextWarnTier.has(e.sessionId)) {
       contextWarnTier.set(e.sessionId, 'warn')
       void discord.postNotice(
         channelId,
-        `⚠️ **Context getting heavy** — ${(e.usage.inputTokens / 1000).toFixed(0)}k input tokens used. Consider /compact if responses slow down.`,
+        t(defaultLocale(), 'notice.contextWarn', { kTokens }),
       )
     }
   }
@@ -380,7 +382,7 @@ async function main(): Promise<void> {
       return
     }
     startTyping(u.textChannelId)
-    void discord.postNotice(u.textChannelId, `🎙️ ${u.text}`)
+    void discord.postNotice(u.textChannelId, t(defaultLocale(), 'notice.voiceTranscript', { text: u.text }))
   }
 
   function handleDiscordInbound(msg: InboundMessage): void {

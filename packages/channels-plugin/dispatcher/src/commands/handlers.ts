@@ -21,6 +21,7 @@ import type { CommandContext } from './types.ts'
 import type { SessionEffort, SessionTransportName } from '../state/sessions.ts'
 import { compactSession } from '../compact.ts'
 import { listByBackend, KNOWN_BACKENDS } from '../state/model-catalog.ts'
+import { t } from '../i18n.ts'
 
 /**
  * Voice-mode defaults — applied by /pickup when the operator omits a flag.
@@ -40,12 +41,12 @@ export async function handleBind(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   if (!interaction.guildId || !interaction.guild) {
-    await interaction.editReply('Not in a guild.')
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
     return
   }
   const member = interaction.member
   if (!(member instanceof GuildMember) || !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.editReply('You need the **Manage Server** permission to bind a channel.')
+    await interaction.editReply(t(interaction.locale, 'common.permManageGuildBind'))
     return
   }
 
@@ -59,19 +60,14 @@ export async function handleBind(
   // Channels transport is claude-code-only — reject mismatched combinations
   // at bind time so the user gets a clear error instead of a silent no-op.
   if (transportOpt === 'channels' && backendOpt && backendOpt !== 'claude-code') {
-    await interaction.editReply(
-      `❌ Channels transport is claude-only. Use \`transport:per-turn\` with backend \`${backendOpt}\`.`,
-    )
+    await interaction.editReply(t(interaction.locale, 'bind.channelsClaudeOnly', { backend: backendOpt }))
     return
   }
   // Channels transport needs tmux to give claude a TTY. Refuse loudly here
   // rather than silently downgrading — the operator picked transport:channels
   // for a reason and should hear that the host can't honor it.
   if (transportOpt === 'channels' && !ctx.channelsAvailable()) {
-    await interaction.editReply(
-      `❌ \`transport:channels\` requires **tmux** on this host (not installed). ` +
-      `Install it (e.g. \`apt install tmux\`) and restart the dispatcher, or use \`transport:per-turn\`.`,
-    )
+    await interaction.editReply(t(interaction.locale, 'bind.channelsNeedsTmux'))
     return
   }
 
@@ -79,9 +75,7 @@ export async function handleBind(
   // existing session on this channel (so /bind is also "reactivate").
   let target = nameOpt ? ctx.sessions.findByName(nameOpt) : ctx.sessions.findLatestForChannel(channelId)
   if (nameOpt && !target) {
-    await interaction.editReply(
-      `No session named "${nameOpt}". Omit \`name\` to create a fresh one, or /sessions to list.`,
-    )
+    await interaction.editReply(t(interaction.locale, 'bind.namedNotFound', { name: nameOpt }))
     return
   }
   if (!target) {
@@ -124,9 +118,11 @@ export async function handleBind(
   console.log(
     `[bind] guild ${interaction.guildId} channel ${channelId} → session "${target.name}" (transport=${target.transport} backend=${target.backend}) by ${member.user.tag}`,
   )
-  await interaction.editReply(
-    `🔗 This channel is now bound to session **${target.name}** (transport: \`${target.transport}\`, backend: \`${target.backend}\`). Every message here routes to it.`,
-  )
+  await interaction.editReply(t(interaction.locale, 'bind.success', {
+    name: target.name,
+    transport: target.transport,
+    backend: target.backend,
+  }))
 }
 
 /**
@@ -141,46 +137,39 @@ export async function handleTransport(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   if (!interaction.guildId) {
-    await interaction.editReply('Not in a guild.')
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
     return
   }
   const member = interaction.member
   if (!(member instanceof GuildMember) || !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.editReply('You need the **Manage Server** permission to change a session transport.')
+    await interaction.editReply(t(interaction.locale, 'common.permManageGuildTransport'))
     return
   }
 
   const target = ctx.sessions.findLatestForChannel(interaction.channelId)
   if (!target) {
-    await interaction.editReply('No session bound to this channel. Run `/bind` first.')
+    await interaction.editReply(t(interaction.locale, 'common.noSessionHere'))
     return
   }
 
   const mode = interaction.options.getString('mode', true) as SessionTransportName
   if (mode === target.transport) {
-    await interaction.editReply(`Session **${target.name}** is already on transport \`${mode}\`. No change.`)
+    await interaction.editReply(t(interaction.locale, 'transport.alreadyOnMode', { name: target.name, mode }))
     return
   }
   if (mode === 'channels' && !ctx.channelsAvailable()) {
-    await interaction.editReply(
-      `❌ \`transport:channels\` requires **tmux** on this host (not installed). ` +
-      `Install it (e.g. \`apt install tmux\`) and restart the dispatcher, or stay on \`transport:per-turn\`.`,
-    )
+    await interaction.editReply(t(interaction.locale, 'bind.channelsNeedsTmux'))
     return
   }
 
   ctx.killFor(target.id)
   const updated = await ctx.sessions.setTransport(target.id, mode)
   if (!updated) {
-    await interaction.editReply('Session vanished between lookup and update — try again.')
+    await interaction.editReply(t(interaction.locale, 'common.sessionVanished'))
     return
   }
-  const note = mode === 'per-turn'
-    ? ' Permission relay is disabled in per-turn mode (claude runs with --dangerously-skip-permissions).'
-    : ''
-  await interaction.editReply(
-    `🔁 Transport set to \`${mode}\`. Claude child killed; next message respawns.${note}`,
-  )
+  const note = mode === 'per-turn' ? t(interaction.locale, 'transport.perTurnNote') : ''
+  await interaction.editReply(t(interaction.locale, 'transport.set', { mode, note }))
 }
 
 /**
@@ -195,43 +184,38 @@ export async function handleBackend(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   if (!interaction.guildId) {
-    await interaction.editReply('Not in a guild.')
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
     return
   }
   const member = interaction.member
   if (!(member instanceof GuildMember) || !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.editReply('You need the **Manage Server** permission to change a session backend.')
+    await interaction.editReply(t(interaction.locale, 'common.permManageGuildBackend'))
     return
   }
 
   const target = ctx.sessions.findLatestForChannel(interaction.channelId)
   if (!target) {
-    await interaction.editReply('No session bound to this channel. Run `/bind` first.')
+    await interaction.editReply(t(interaction.locale, 'common.noSessionHere'))
     return
   }
 
   const name = interaction.options.getString('name', true)
   if (name === target.backend) {
-    await interaction.editReply(`Session **${target.name}** is already on backend \`${name}\`. No change.`)
+    await interaction.editReply(t(interaction.locale, 'backend.alreadyOnName', { name: target.name, backend: name }))
     return
   }
   if (target.transport === 'channels' && name !== 'claude-code') {
-    await interaction.editReply(
-      `❌ This session uses the channels transport, which is claude-only. ` +
-      `Run \`/transport mode:per-turn\` first, then \`/backend name:${name}\`.`,
-    )
+    await interaction.editReply(t(interaction.locale, 'backend.channelsClaudeOnly', { backend: name }))
     return
   }
 
   ctx.killFor(target.id)
   const updated = await ctx.sessions.setBackend(target.id, name)
   if (!updated) {
-    await interaction.editReply('Session vanished between lookup and update — try again.')
+    await interaction.editReply(t(interaction.locale, 'common.sessionVanished'))
     return
   }
-  await interaction.editReply(
-    `🔁 Backend set to \`${name}\`. Agent killed; next message respawns with the new CLI.`,
-  )
+  await interaction.editReply(t(interaction.locale, 'backend.set', { backend: name }))
 }
 
 export async function handleUnbind(
@@ -241,12 +225,12 @@ export async function handleUnbind(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   if (!interaction.guildId || !interaction.guild) {
-    await interaction.editReply('Not in a guild.')
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
     return
   }
   const member = interaction.member
   if (!(member instanceof GuildMember) || !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.editReply('You need the **Manage Server** permission to unbind a channel.')
+    await interaction.editReply(t(interaction.locale, 'common.permManageGuildUnbind'))
     return
   }
 
@@ -262,11 +246,7 @@ export async function handleUnbind(
   }
 
   console.log(`[unbind] guild ${interaction.guildId} channel ${channelId} by ${member.user.tag}`)
-  await interaction.editReply(
-    wasBound
-      ? '🔓 This channel is unbound. The claude session is preserved — re-bind to resume.'
-      : "This channel wasn't bound. No change.",
-  )
+  await interaction.editReply(t(interaction.locale, wasBound ? 'unbind.success' : 'unbind.wasNotBound'))
 }
 
 export async function handleSessions(
@@ -277,7 +257,7 @@ export async function handleSessions(
 
   const list = ctx.sessions.list().slice(0, 15)
   if (list.length === 0) {
-    await interaction.editReply('No sessions yet. Run `/bind` in a channel to create one.')
+    await interaction.editReply(t(interaction.locale, 'sessions.empty'))
     return
   }
   const rows = list.map(s => {
@@ -305,16 +285,16 @@ export async function handleRename(
   const channelId = interaction.channelId
   const target = ctx.sessions.findLatestForChannel(channelId)
   if (!target) {
-    await interaction.editReply('No session bound to this channel. Run `/bind` first.')
+    await interaction.editReply(t(interaction.locale, 'common.noSessionHere'))
     return
   }
 
   const newName = interaction.options.getString('name', true)
   try {
     const updated = await ctx.sessions.rename(target.id, newName)
-    await interaction.editReply(`✏️ Renamed to **${updated.name}**.`)
+    await interaction.editReply(t(interaction.locale, 'rename.success', { name: updated.name }))
   } catch (err) {
-    await interaction.editReply(`❌ ${(err as Error).message}`)
+    await interaction.editReply(t(interaction.locale, 'common.errorPrefix', { error: (err as Error).message }))
   }
 }
 
@@ -329,7 +309,7 @@ async function sessionForCurrentChannel(
 ) {
   const target = ctx.sessions.findLatestForChannel(interaction.channelId)
   if (!target) {
-    await interaction.editReply('No session bound to this channel. Run `/bind` first.')
+    await interaction.editReply(t(interaction.locale, 'common.noSessionHere'))
     return undefined
   }
   return target
@@ -346,14 +326,14 @@ export async function handleModel(
   const name = interaction.options.getString('name') ?? undefined
   const updated = await ctx.sessions.setModel(target.id, name)
   if (!updated) {
-    await interaction.editReply('Session vanished between lookup and update — try again.')
+    await interaction.editReply(t(interaction.locale, 'common.sessionVanished'))
     return
   }
   ctx.killFor(updated.id)
   await interaction.editReply(
     name
-      ? `🔁 Model set to **${updated.model}**. Claude child killed; next message respawns with the new flag.`
-      : `🔁 Model override cleared (back to CLI default). Claude child killed; next message respawns.`,
+      ? t(interaction.locale, 'model.set', { model: updated.model ?? '' })
+      : t(interaction.locale, 'model.cleared'),
   )
 }
 
@@ -373,9 +353,7 @@ export async function handleModels(
   if (!backend) {
     const target = ctx.sessions.findLatestForChannel(interaction.channelId)
     if (!target) {
-      await interaction.editReply(
-        'No session bound to this channel — pass `backend:<name>` explicitly, or `/bind` here first.',
-      )
+      await interaction.editReply(t(interaction.locale, 'models.noSessionPickBackend'))
       return
     }
     backend = target.backend
@@ -384,20 +362,20 @@ export async function handleModels(
   const models = listByBackend(backend)
   if (models.length === 0) {
     const hint = KNOWN_BACKENDS.has(backend)
-      ? `No curated entries (catalog mismatch?). Use /model name:<id> with any model id the backend accepts.`
-      : `No curated model list for \`${backend}\`. Pass any model id the underlying CLI accepts via \`/model name:<id>\`.`
-    await interaction.editReply(`📋 Models for backend \`${backend}\`: ${hint}`)
+      ? t(interaction.locale, 'models.noCuratedForKnown')
+      : t(interaction.locale, 'models.noCuratedForUnknown', { backend })
+    await interaction.editReply(t(interaction.locale, 'models.headerForBackend', { backend, hint }))
     return
   }
 
   // Group by family for readability when there are many entries (≥6).
-  const lines: string[] = [`📋 Models known for backend \`${backend}\`:`]
+  const lines: string[] = [t(interaction.locale, 'models.headerKnown', { backend })]
   for (const m of models) {
     const note = m.notes ? `  _(${m.notes})_` : ''
     lines.push(`• \`${m.id}\`  · ${m.provider}/${m.family}${note}`)
   }
   lines.push('')
-  lines.push(`Apply one with \`/model name:<id>\`. /model with no name clears the override.`)
+  lines.push(t(interaction.locale, 'models.applyFooter'))
   await interaction.editReply(lines.join('\n'))
 }
 
@@ -413,14 +391,14 @@ export async function handleEffort(
   const effort = level === 'default' ? undefined : (level as NonNullable<typeof target.effort>)
   const updated = await ctx.sessions.setEffort(target.id, effort)
   if (!updated) {
-    await interaction.editReply('Session vanished between lookup and update — try again.')
+    await interaction.editReply(t(interaction.locale, 'common.sessionVanished'))
     return
   }
   ctx.killFor(updated.id)
   await interaction.editReply(
     effort
-      ? `🔁 Effort set to **${effort}**. Claude child killed; next message respawns.`
-      : `🔁 Effort override cleared. Claude child killed; next message respawns.`,
+      ? t(interaction.locale, 'effort.set', { effort })
+      : t(interaction.locale, 'effort.cleared'),
   )
 }
 
@@ -440,11 +418,7 @@ export async function handlePermissions(
   // plan mode is gated here at the command layer so the user gets a clear
   // error instead of a silent hang.
   if (mode === 'plan' && target.transport === 'channels') {
-    await interaction.editReply(
-      `❌ Plan mode opens an interactive "Approve plan?" prompt at the terminal, ` +
-      `which channels-transport sessions (running inside detached tmux) cannot answer. ` +
-      `Switch this session to \`transport:per-turn\` first, or pick a different permission mode.`,
-    )
+    await interaction.editReply(t(interaction.locale, 'permissions.planChannelsUnsupported'))
     return
   }
   const value = mode === 'default-for-mode'
@@ -452,15 +426,14 @@ export async function handlePermissions(
     : (mode as NonNullable<typeof target.permissionMode>)
   const updated = await ctx.sessions.setPermissionMode(target.id, value)
   if (!updated) {
-    await interaction.editReply('Session vanished between lookup and update — try again.')
+    await interaction.editReply(t(interaction.locale, 'common.sessionVanished'))
     return
   }
   ctx.killFor(updated.id)
   await interaction.editReply(
     value
-      ? `🔐 Permission mode set to **${value}**. Claude child killed; next message respawns. ` +
-        `⚠️ If the policy needs interactive approval (\`default\`, \`plan\`), the bot relays prompts via Discord buttons when permission relay is enabled.`
-      : `🔐 Permission override cleared (back to \`bypassPermissions\`). Claude child killed; next message respawns.`,
+      ? t(interaction.locale, 'permissions.set', { mode: value })
+      : t(interaction.locale, 'permissions.cleared'),
   )
 }
 
@@ -475,8 +448,8 @@ export async function handleCancel(
   const killed = ctx.killFor(target.id)
   await interaction.editReply(
     killed
-      ? `🛑 Aborted in-flight turn for **${target.name}**. Next message respawns the session.`
-      : `Nothing to abort — no claude child running for **${target.name}**.`,
+      ? t(interaction.locale, 'cancel.aborted', { name: target.name })
+      : t(interaction.locale, 'cancel.nothing', { name: target.name }),
   )
 }
 
@@ -494,32 +467,30 @@ export async function handleVoiceJoin(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   if (!ctx.voice) {
-    await interaction.editReply(
-      '🔇 Voice is unavailable — the Whisper sidecar failed to start at boot. Check dispatcher logs.',
-    )
+    await interaction.editReply(t(interaction.locale, 'voice.unavailable'))
     return
   }
   if (!interaction.guild || !interaction.guildId) {
-    await interaction.editReply('Not in a guild.')
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
     return
   }
   const member = interaction.member
   if (!(member instanceof GuildMember)) {
-    await interaction.editReply("Couldn't resolve your guild membership.")
+    await interaction.editReply(t(interaction.locale, 'common.couldntResolveMember'))
     return
   }
   const voiceChannel = member.voice.channel
   if (!voiceChannel) {
-    await interaction.editReply('Join a voice channel first, then call `/voice-join` from the bound text channel.')
+    await interaction.editReply(t(interaction.locale, 'voiceJoin.needVoiceChannelFirst'))
     return
   }
   const session = ctx.sessions.findLatestForChannel(interaction.channelId)
   if (!session) {
-    await interaction.editReply("This text channel isn't bound. Run `/bind` here first.")
+    await interaction.editReply(t(interaction.locale, 'voiceJoin.channelNotBound'))
     return
   }
   if (ctx.voice.has(interaction.guildId)) {
-    await interaction.editReply('Already on a voice line in this guild. Run `/voice-leave` first.')
+    await interaction.editReply(t(interaction.locale, 'voiceJoin.alreadyOnLine'))
     return
   }
 
@@ -533,15 +504,16 @@ export async function handleVoiceJoin(
       adapterCreator: voiceChannel.guild.voiceAdapterCreator,
     })
   } catch (err) {
-    await interaction.editReply(`❌ ${(err as Error).message}`)
+    await interaction.editReply(t(interaction.locale, 'common.errorPrefix', { error: (err as Error).message }))
     return
   }
 
   ctx.spawnFor(session)
   void ctx.sessions.touch(session.id)
-  await interaction.editReply(
-    `🎤 Joined **${voiceChannel.name}** — bound to session **${session.name}**. Speak and your transcripts will route through this text channel.`,
-  )
+  await interaction.editReply(t(interaction.locale, 'voiceJoin.success', {
+    channel: voiceChannel.name,
+    name: session.name,
+  }))
 }
 
 export async function handleVoiceLeave(
@@ -551,19 +523,15 @@ export async function handleVoiceLeave(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   if (!ctx.voice) {
-    await interaction.editReply('🔇 Voice is unavailable — nothing to leave.')
+    await interaction.editReply(t(interaction.locale, 'voice.unavailableNothingToLeave'))
     return
   }
   if (!interaction.guildId) {
-    await interaction.editReply('Not in a guild.')
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
     return
   }
   const left = ctx.voice.leave(interaction.guildId)
-  await interaction.editReply(
-    left
-      ? '👋 Left the voice channel. The claude session is preserved — text messages still work.'
-      : 'No active voice line in this guild.',
-  )
+  await interaction.editReply(t(interaction.locale, left ? 'voiceLeave.left' : 'voiceLeave.notOnLine'))
 }
 
 export async function handleSay(
@@ -573,23 +541,23 @@ export async function handleSay(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   if (!ctx.voice) {
-    await interaction.editReply('🔇 Voice is unavailable.')
+    await interaction.editReply(t(interaction.locale, 'voice.unavailableShort'))
     return
   }
   if (!interaction.guildId) {
-    await interaction.editReply('Not in a guild.')
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
     return
   }
   const line = ctx.voice.get(interaction.guildId)
   if (!line) {
-    await interaction.editReply('No active voice line. Run `/voice-join` first.')
+    await interaction.editReply(t(interaction.locale, 'say.noActiveLine'))
     return
   }
   const text = interaction.options.getString('text', true)
-  await interaction.editReply(`🗣️ Synthesizing: "${text.slice(0, 200)}"`)
+  await interaction.editReply(t(interaction.locale, 'say.synthesizing', { preview: text.slice(0, 200) }))
   const ok = await ctx.voice.speak(interaction.guildId, text)
   await interaction.followUp({
-    content: ok ? '✅ Done.' : '❌ TTS failed (check dispatcher logs).',
+    content: t(interaction.locale, ok ? 'say.done' : 'say.ttsFailed'),
     flags: MessageFlags.Ephemeral,
   })
 }
@@ -608,11 +576,11 @@ export async function handleResume(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   if (!interaction.guildId) {
-    await interaction.editReply('Not in a guild.')
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
     return
   }
   if (!ctx.guildConfig.isBound(interaction.guildId, interaction.channelId)) {
-    await interaction.editReply("This channel isn't bound. An admin needs to run `/bind` here first.")
+    await interaction.editReply(t(interaction.locale, 'resume.channelNotBound'))
     return
   }
 
@@ -632,15 +600,15 @@ export async function handleResume(
   // Refuse if the target is already bound to a different channel — don't
   // silently yank it out from under another channel's flow.
   if (target.channelId && target.channelId !== channelId) {
-    await interaction.editReply(
-      `Session **${target.name}** is currently bound to <#${target.channelId}>. ` +
-      `Run \`/unbind\` there first, or pick another name.`,
-    )
+    await interaction.editReply(t(interaction.locale, 'resume.targetBoundElsewhere', {
+      name: target.name,
+      channelId: target.channelId,
+    }))
     return
   }
 
   if (current?.id === target.id) {
-    await interaction.editReply(`Already on **${target.name}** here. No change.`)
+    await interaction.editReply(t(interaction.locale, 'resume.sameAsCurrent', { name: target.name }))
     return
   }
 
@@ -652,13 +620,12 @@ export async function handleResume(
   ctx.spawnFor(target)
 
   const parkedNote = current
-    ? ` Previous session **${current.name}** parked — warm child killed; run \`/resume name:${current.name}\` to bring it back (transcript is preserved).`
+    ? t(interaction.locale, 'resume.parkedNote', { name: current.name })
     : ''
-  await interaction.editReply(
-    created
-      ? `🆕 Started new session **${target.name}** — this channel routes to it now.${parkedNote}`
-      : `🔁 Resumed **${target.name}** — this channel routes to it now.${parkedNote}`,
-  )
+  await interaction.editReply(t(interaction.locale, created ? 'resume.createdNew' : 'resume.switchedTo', {
+    name: target.name,
+    parked: parkedNote,
+  }))
 }
 
 // ---------------------------------------------------------------------------
@@ -675,7 +642,7 @@ export async function handleCompact(
   await interaction.deferReply()
 
   if (!interaction.guildId) {
-    await interaction.editReply('Not in a guild.')
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
     return
   }
 
@@ -684,8 +651,8 @@ export async function handleCompact(
   if (!target) {
     await interaction.editReply(
       argName
-        ? `No session named "${argName}". \`/sessions\` to list.`
-        : "No session bound to this channel. Pass `name:<session>` or `/bind` here first.",
+        ? t(interaction.locale, 'compact.targetNotFoundNamed', { name: argName })
+        : t(interaction.locale, 'compact.targetNotFound'),
     )
     return
   }
@@ -712,7 +679,7 @@ export async function handleCompact(
       onProgress,
     )
   } catch (err) {
-    await interaction.editReply(`❌ Compact failed: ${(err as Error).message}`)
+    await interaction.editReply(t(interaction.locale, 'compact.failed', { error: (err as Error).message }))
     return
   }
 
@@ -808,27 +775,25 @@ export async function handlePickup(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
   if (!ctx.voice) {
-    await interaction.editReply(
-      '🔇 Voice is unavailable — the Whisper sidecar failed to start at boot. Check dispatcher logs.',
-    )
+    await interaction.editReply(t(interaction.locale, 'voice.unavailable'))
     return
   }
   if (!interaction.guild || !interaction.guildId) {
-    await interaction.editReply('Not in a guild.')
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
     return
   }
   const member = interaction.member
   if (!(member instanceof GuildMember)) {
-    await interaction.editReply("Couldn't resolve your guild membership.")
+    await interaction.editReply(t(interaction.locale, 'common.couldntResolveMember'))
     return
   }
   const voiceChannel = member.voice.channel
   if (!voiceChannel) {
-    await interaction.editReply('Join a voice channel first, then call `/pickup`.')
+    await interaction.editReply(t(interaction.locale, 'pickup.needVoiceChannelFirst'))
     return
   }
   if (ctx.voice.has(interaction.guildId)) {
-    await interaction.editReply('Already on a voice line in this guild. Run `/hangup` first.')
+    await interaction.editReply(t(interaction.locale, 'pickup.alreadyOnLine'))
     return
   }
 
@@ -840,15 +805,11 @@ export async function handlePickup(
 
   // Reject channels+non-claude up front (matches /bind validation).
   if (transport === 'channels' && backend !== 'claude-code') {
-    await interaction.editReply(
-      `❌ Channels transport is claude-only. Use \`transport:per-turn\` with backend \`${backend}\`.`,
-    )
+    await interaction.editReply(t(interaction.locale, 'bind.channelsClaudeOnly', { backend }))
     return
   }
   if (transport === 'channels' && !ctx.channelsAvailable()) {
-    await interaction.editReply(
-      `❌ \`transport:channels\` requires **tmux** on this host (not installed). Use \`transport:per-turn\`.`,
-    )
+    await interaction.editReply(t(interaction.locale, 'bind.channelsNeedsTmux'))
     return
   }
 
@@ -898,7 +859,7 @@ export async function handlePickup(
       adapterCreator: voiceChannel.guild.voiceAdapterCreator,
     })
   } catch (err) {
-    await interaction.editReply(`❌ ${(err as Error).message}`)
+    await interaction.editReply(t(interaction.locale, 'common.errorPrefix', { error: (err as Error).message }))
     return
   }
 
@@ -909,11 +870,14 @@ export async function handlePickup(
     `→ session "${session.name}" (transport=${session.transport} backend=${session.backend} ` +
     `model=${session.model ?? '(default)'} effort=${session.effort ?? '(default)'}) by ${member.user.tag}`,
   )
-  await interaction.editReply(
-    `📞 **Picked up** — joined **${voiceChannel.name}**, bound to session **${session.name}**.\n` +
-    `\`transport=${session.transport}\` · \`backend=${session.backend}\` · \`model=${session.model ?? '(default)'}\` · \`effort=${session.effort ?? '(default)'}\`\n` +
-    `Speak to talk; replies post here + TTS to voice. \`/hangup\` to end the call (text session preserved).`,
-  )
+  await interaction.editReply(t(interaction.locale, 'pickup.success', {
+    channel: voiceChannel.name,
+    name: session.name,
+    transport: session.transport,
+    backend: session.backend,
+    model: session.model ?? '(default)',
+    effort: session.effort ?? '(default)',
+  }))
 }
 
 /**
