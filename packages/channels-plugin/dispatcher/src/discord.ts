@@ -109,6 +109,39 @@ export class DiscordChannelClient {
     return ids
   }
 
+  /**
+   * Start the "Papercup is typing…" indicator for a channel and keep it alive
+   * by re-pinging every 8s (Discord's typing indicator expires after ~10s).
+   * Returns a stop function to clear the interval. Self-clears after 5min as
+   * a safety net so a missed reply doesn't leave the indicator running
+   * forever. Failures (channel not sendable, permission denied) are
+   * swallowed silently — this is a UX nicety, not load-bearing.
+   */
+  beginTypingHeartbeat(channelId: string): () => void {
+    let stopped = false
+    const tick = async (): Promise<void> => {
+      if (stopped) return
+      try {
+        const ch = await this.client.channels.fetch(channelId)
+        if (ch && ch.isTextBased() && 'sendTyping' in ch) {
+          await ch.sendTyping().catch(() => undefined)
+        }
+      } catch {
+        // ignore
+      }
+    }
+    void tick()
+    const interval = setInterval(tick, 8_000)
+    const watchdog = setTimeout(() => stop(), 5 * 60_000)
+    const stop = (): void => {
+      if (stopped) return
+      stopped = true
+      clearInterval(interval)
+      clearTimeout(watchdog)
+    }
+    return stop
+  }
+
   /** Send a system / informational message to a channel without quote-replying. */
   async postNotice(channelId: string, text: string): Promise<string | undefined> {
     try {

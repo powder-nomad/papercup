@@ -179,6 +179,23 @@ async function main(): Promise<void> {
   type PendingPermission = { sessionId: string; channelId: string; messageId?: string }
   const pendingPermissions = new Map<string, PendingPermission>()
 
+  // Discord "Papercup is typing…" heartbeat per bound channel. Started in
+  // handleDiscordInbound / handleVoiceUtterance after an event is pushed to
+  // the transport; cleared in onReply when the matching reply arrives.
+  // Idempotent on start: if a heartbeat is already running for the channel
+  // (e.g. user sent two messages back-to-back) the second start is a no-op.
+  const typingStops = new Map<string, () => void>()
+  const startTyping = (channelId: string): void => {
+    if (typingStops.has(channelId)) return
+    typingStops.set(channelId, discord.beginTypingHeartbeat(channelId))
+  }
+  const stopTyping = (channelId: string): void => {
+    const stop = typingStops.get(channelId)
+    if (!stop) return
+    typingStops.delete(channelId)
+    stop()
+  }
+
   const onReply = (e: ReplyEvent): void => {
     void (async () => {
       const session = sessions.findById(e.sessionId)
@@ -200,6 +217,8 @@ async function main(): Promise<void> {
         void sessions.touch(e.sessionId)
       } catch (err) {
         log.error(`reply failed (session=${e.sessionId}, msgId=${e.msgId}):`, err)
+      } finally {
+        stopTyping(e.channelId)
       }
       if (voice) {
         const line = voice.getBySession(e.sessionId)
@@ -360,6 +379,7 @@ async function main(): Promise<void> {
       log.warn(`voice utterance: transport offline for session=${u.sessionId}; dropping transcript`)
       return
     }
+    startTyping(u.textChannelId)
     void discord.postNotice(u.textChannelId, `🎙️ ${u.text}`)
   }
 
@@ -404,7 +424,9 @@ async function main(): Promise<void> {
           `transport not yet ready for session=${session.id}; dropping message ${msg.messageId}. ` +
           `(Channels plugin handshake takes ~1-2s after spawn — ask the user to resend.)`,
         )
+        return
       }
+      startTyping(msg.channelId)
     })().catch(err => log.error('inbound handler:', err))
   }
 
@@ -441,6 +463,10 @@ async function main(): Promise<void> {
     shuttingDown = true
     log.info(`shutdown: ${reason}`)
     clearInterval(reaperHandle)
+    for (const stop of typingStops.values()) {
+      try { stop() } catch { /* ignore */ }
+    }
+    typingStops.clear()
     try { voice?.shutdown() } catch (err) { log.warn('voice shutdown err:', err) }
     try { tts?.stop() } catch (err) { log.warn('tts stop err:', err) }
     try { stt?.stop() } catch (err) { log.warn('stt stop err:', err) }
