@@ -95,6 +95,45 @@ cache stays warm across turns. Mid-turn injection is native — push another
 event while claude is mid-reply and the channels protocol delivers it as a
 second turn.
 
+#### Why tmux supervision
+
+Channels mode in claude 2.1.145 only consumes notifications when claude is
+running interactively (with a TTY). A daemon-spawned claude (stdio=pipe)
+auto-enters `-p` print mode and exits right after the first turn — channel
+events never get processed. We verified this manually: `claude
+--dangerously-load-development-channels server:papercup-channels` works fine
+in a real terminal, dies immediately when piped.
+
+The dispatcher's channels driver gets around this by wrapping every spawn in
+`tmux new-session -d -s papercup-<sessionId>`. tmux owns the PTY, claude
+sees a TTY, channels notifications flow normally. `kill`/`isAlive`/`killAll`
+map to `tmux kill-session` / `tmux has-session` / iterating tracked names.
+
+Tradeoffs accepted:
+- tmux becomes a soft runtime dependency. The dispatcher probes `tmux -V` at
+  boot. If missing, `transport:channels` is disabled (loud refusal at
+  `/bind`/`/transport`) and only `transport:per-turn` works.
+- claude's stdout/stderr aren't captured by the dispatcher (they live in the
+  tmux scrollback). Debug a stuck session with
+  `tmux attach -t papercup-<sessionId>`.
+- The `onTurnComplete` token-counter callback is dead in channels mode (no
+  `--output-format stream-json --verbose` to emit `result` events). Context-
+  pressure warnings at 150k/180k tokens are silent for channels sessions.
+  Per-turn sessions still get them via their backend driver's own parser.
+
+Considered alternatives:
+- **node-pty** (native module wrapping each claude in its own PTY directly):
+  rejected because it's untested for this specific case, adds a native
+  build, and is harder to debug than `tmux attach`.
+- **Headless flag bundle (`--print --input-format stream-json …`)**: chased
+  this for a day; the failure modes ranged from "no conversation found" to
+  "Input must be provided" to "claude exits code=0 after bootstrap turn"
+  depending on how we tweaked the flags. Channels notifications were never
+  processed in any combination. Documented in `claude-children.ts` header.
+
+If/when Anthropic ships an official headless-channels host mode, the tmux
+hop can come out.
+
 ### Per-turn transport — phone-call interrupts
 
 ```

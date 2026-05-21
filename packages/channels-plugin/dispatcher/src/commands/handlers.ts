@@ -51,6 +51,16 @@ export async function handleBind(
     )
     return
   }
+  // Channels transport needs tmux to give claude a TTY. Refuse loudly here
+  // rather than silently downgrading — the operator picked transport:channels
+  // for a reason and should hear that the host can't honor it.
+  if (transportOpt === 'channels' && !ctx.channelsAvailable()) {
+    await interaction.editReply(
+      `❌ \`transport:channels\` requires **tmux** on this host (not installed). ` +
+      `Install it (e.g. \`apt install tmux\`) and restart the dispatcher, or use \`transport:per-turn\`.`,
+    )
+    return
+  }
 
   // If a name was given, look it up. Otherwise, prefer reattaching the
   // existing session on this channel (so /bind is also "reactivate").
@@ -136,6 +146,13 @@ export async function handleTransport(
   const mode = interaction.options.getString('mode', true) as SessionTransportName
   if (mode === target.transport) {
     await interaction.editReply(`Session **${target.name}** is already on transport \`${mode}\`. No change.`)
+    return
+  }
+  if (mode === 'channels' && !ctx.channelsAvailable()) {
+    await interaction.editReply(
+      `❌ \`transport:channels\` requires **tmux** on this host (not installed). ` +
+      `Install it (e.g. \`apt install tmux\`) and restart the dispatcher, or stay on \`transport:per-turn\`.`,
+    )
     return
   }
 

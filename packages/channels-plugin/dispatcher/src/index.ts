@@ -297,6 +297,7 @@ async function main(): Promise<void> {
       return transportFor(s).isPluginOnline(id)
     },
     resolvePermission,
+    channelsAvailable: () => channelsTransport.isAvailable(),
     voice,
   }
 

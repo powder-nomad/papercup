@@ -51,12 +51,29 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
   private sessionChannelIds = new Map<string, string>()
   private allowlistCheck: AllowlistCheck = () => true
   private udsStarted = false
+  private readonly tmuxAvailable: boolean
 
   constructor(private init: TransportInit) {
     super()
     this.log = makeLogger('transport:channels')
     this.uds = new UdsServer(init.dispatcherSock)
     this.wireUds()
+    this.tmuxAvailable = ClaudeChildManager.probeTmuxAvailable()
+    if (this.tmuxAvailable) {
+      this.log.info('tmux available — channels transport ready')
+    } else {
+      this.log.warn(
+        'tmux NOT installed — channels transport DISABLED. ' +
+        'Install tmux (e.g. `apt install tmux`) to enable, or use transport:per-turn. ' +
+        'Existing transport:channels bindings will refuse to spawn.',
+      )
+    }
+  }
+
+  /** True when the host has tmux installed. Slash-command handlers check
+   *  this before allowing /bind transport:channels or /transport mode:channels. */
+  isAvailable(): boolean {
+    return this.tmuxAvailable
   }
 
   /** Dispatcher calls this once at boot before any pushEvent. Idempotent. */
@@ -90,6 +107,14 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
 
   ensureRunning(cfg: SessionRuntimeConfig): void {
     if (this.claude.isAlive(cfg.sessionId)) return
+    if (!this.tmuxAvailable) {
+      this.log.warn(
+        `channels transport requires tmux (not installed). ` +
+        `Session ${cfg.sessionId} will not be spawned. Install tmux or run ` +
+        `/transport mode:per-turn to switch this session.`,
+      )
+      return
+    }
     if (cfg.backend !== 'claude-code') {
       this.log.warn(
         `channels transport only supports backend=claude-code (got ${cfg.backend}). ` +

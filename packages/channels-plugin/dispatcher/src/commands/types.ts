@@ -38,6 +38,13 @@ export type CommandContext = {
     clickerUserId: string,
   ) => boolean
   /**
+   * Whether transport:channels is currently supported on this host. Today this
+   * means tmux is installed (channels-mode claude requires a TTY; we spawn
+   * inside a detached tmux session to provide one). Handlers should reject
+   * /bind transport:channels and /transport mode:channels when this is false.
+   */
+  channelsAvailable: () => boolean
+  /**
    * Voice subsystem. Undefined if the Whisper sidecar failed to boot — voice
    * slash commands return a "voice unavailable" error in that case.
    */

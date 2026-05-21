@@ -56,9 +56,26 @@ All DESIGN.md phases shipped: text, multi-channel, voice, knobs, polish + attach
 - A Discord application + bot token (see Anthropic discord plugin's
   README.md "Quick Setup" steps 1-3 for the bot-creation flow)
 - Claude Code 2.1.80+ logged in via `claude auth` (claude.ai subscription)
+- **tmux ≥ 3.0 — required ONLY for `transport:channels`.** Skip if you only
+  use `transport:per-turn`. See [Why tmux](#why-tmux) below.
 - (Voice only) Python 3.10+ in `packages/voice-stack/sidecar/.venv` —
   `npm run setup-venv` at the repo root creates it. Silero VAD + Whisper
   models need to be downloaded once via `npm run download-models`.
+
+### Why tmux
+
+Channels-mode claude (2.1.145) only works with a real TTY. Spawned from a
+daemon with `stdio: 'pipe'`, claude auto-enters `-p` (print) mode and exits
+right after its first turn — channel notifications never get processed. The
+dispatcher's `transport:channels` driver gets around this by spawning each
+claude inside a detached `tmux new-session -d`, which gives claude the
+interactive TTY it expects. If tmux isn't installed, the dispatcher logs a
+noisy warning at boot, and `/bind transport:channels` (and `/transport
+mode:channels`) reject with an install hint — they will NOT silently
+downgrade. The `transport:per-turn` driver doesn't need tmux.
+
+For debugging a stuck channels session, `tmux attach -t papercup-<sessionId>`
+shows the live claude TUI in your terminal.
 
 ## Install
 
