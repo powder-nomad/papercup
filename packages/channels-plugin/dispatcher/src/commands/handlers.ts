@@ -19,6 +19,7 @@ import {
 import type { CommandContext } from './types.ts'
 import type { SessionTransportName } from '../state/sessions.ts'
 import { compactSession } from '../compact.ts'
+import { listByBackend, KNOWN_BACKENDS } from '../state/model-catalog.ts'
 
 export async function handleBind(
   interaction: ChatInputCommandInteraction,
@@ -342,6 +343,50 @@ export async function handleModel(
       ? `🔁 Model set to **${updated.model}**. Claude child killed; next message respawns with the new flag.`
       : `🔁 Model override cleared (back to CLI default). Claude child killed; next message respawns.`,
   )
+}
+
+/**
+ * /models [backend:<name>] — discovery helper. Lists curated model ids
+ * known to be accepted by a backend. Without `backend:`, defaults to this
+ * channel's bound session's backend. Backends with no curated entries
+ * (aider, opencode, crush, amp) get a hint to pass whatever the CLI accepts.
+ */
+export async function handleModels(
+  interaction: ChatInputCommandInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+
+  let backend = interaction.options.getString('backend') ?? undefined
+  if (!backend) {
+    const target = ctx.sessions.findLatestForChannel(interaction.channelId)
+    if (!target) {
+      await interaction.editReply(
+        'No session bound to this channel — pass `backend:<name>` explicitly, or `/bind` here first.',
+      )
+      return
+    }
+    backend = target.backend
+  }
+
+  const models = listByBackend(backend)
+  if (models.length === 0) {
+    const hint = KNOWN_BACKENDS.has(backend)
+      ? `No curated entries (catalog mismatch?). Use /model name:<id> with any model id the backend accepts.`
+      : `No curated model list for \`${backend}\`. Pass any model id the underlying CLI accepts via \`/model name:<id>\`.`
+    await interaction.editReply(`📋 Models for backend \`${backend}\`: ${hint}`)
+    return
+  }
+
+  // Group by family for readability when there are many entries (≥6).
+  const lines: string[] = [`📋 Models known for backend \`${backend}\`:`]
+  for (const m of models) {
+    const note = m.notes ? `  _(${m.notes})_` : ''
+    lines.push(`• \`${m.id}\`  · ${m.provider}/${m.family}${note}`)
+  }
+  lines.push('')
+  lines.push(`Apply one with \`/model name:<id>\`. /model with no name clears the override.`)
+  await interaction.editReply(lines.join('\n'))
 }
 
 export async function handleEffort(

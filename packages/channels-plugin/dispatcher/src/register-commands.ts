@@ -126,6 +126,28 @@ const commands = [
     )
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('models')
+    .setDescription("List models known for a backend (defaults to this channel's current backend).")
+    .addStringOption(o =>
+      o
+        .setName('backend')
+        .setDescription('Backend agent CLI. Defaults to this channel\'s session backend.')
+        .setRequired(false)
+        .addChoices(
+          { name: 'claude-code', value: 'claude-code' },
+          { name: 'codex', value: 'codex' },
+          { name: 'gemini-cli', value: 'gemini-cli' },
+          { name: 'gemini-api', value: 'gemini-api' },
+          { name: 'anthropic-api', value: 'anthropic-api' },
+          { name: 'openai-compat', value: 'openai-compat' },
+          { name: 'aider', value: 'aider-cli' },
+          { name: 'opencode', value: 'opencode-cli' },
+          { name: 'crush', value: 'crush-cli' },
+          { name: 'amp', value: 'amp-cli' },
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('effort')
     .setDescription('Set reasoning effort for this channel\'s session.')
     .addStringOption(o =>

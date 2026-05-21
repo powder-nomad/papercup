@@ -15,6 +15,7 @@ import {
   handleResume,
   handleTransport,
   handleBackend,
+  handleModels,
 } from './handlers.ts'
 import type { CommandContext } from './types.ts'
 
@@ -101,6 +102,9 @@ export async function dispatchInteraction(
         return
       case 'backend':
         await handleBackend(interaction, ctx)
+        return
+      case 'models':
+        await handleModels(interaction, ctx)
         return
       default:
         if (interaction.deferred || interaction.replied) return
