@@ -64,6 +64,12 @@ export class DiscordChannelClient {
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.DirectMessages,
+        // Required so member.voice.channel is populated when /voice-join,
+        // /pickup, or /say need to read the caller's current voice state.
+        // Without it, discord.js doesn't cache voice states and every voice
+        // command bails with "Join a voice channel first." The intent isn't
+        // privileged — no dev-portal toggle needed.
+        GatewayIntentBits.GuildVoiceStates,
       ],
       partials: [Partials.Channel],
     })
