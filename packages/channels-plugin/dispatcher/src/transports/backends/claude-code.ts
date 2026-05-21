@@ -8,6 +8,7 @@ import type {
   TurnEvent,
 } from "./registry.ts";
 import { processRegistry, makeCommandPreview } from "./process-registry.ts";
+import { runWithResumeRecovery } from "./_recovery.ts";
 
 // Off by default — legitimate turns can take hours (install scripts, foreground
 // cloudflared, long extension supervision). The registry + boot reaper already
@@ -163,10 +164,12 @@ export class ClaudeCodeBackend implements AgentBackend {
       args.push("--add-dir", dir);
     }
 
-    if (this.firstTurn) {
-      args.push("--session-id", this.sessionId);
+    const wasFirstTurn = this.firstTurn;
+    const sessionId = this.sessionId;
+    if (wasFirstTurn) {
+      args.push("--session-id", sessionId);
     } else {
-      args.push("--resume", this.sessionId);
+      args.push("--resume", sessionId);
     }
 
     // Log the knobs we're actually passing so it's visible in bot.log
@@ -176,9 +179,48 @@ export class ClaudeCodeBackend implements AgentBackend {
       `effort=${this.opts.effort ?? "(default)"} ` +
       `permission-mode=${this.opts.permissionMode ?? "(default)"} ` +
       `mcps=[${(this.opts.allowedMcps ?? []).join(",")}] ` +
-      `${this.firstTurn ? "first-turn" : "resume"}`,
+      `${wasFirstTurn ? "first-turn" : "resume"}`,
     );
 
+    // Resume-recovery: if --resume fails with "No conversation found with
+    // session ID" (claude's local store has no record — first turn likely
+    // never persisted due to crash/interrupt), retry once with --session-id
+    // under the same UUID. See _recovery.ts for the full rationale.
+    const executeWithArgs = (effectiveArgs: string[]) => this.executeTurn(
+      effectiveArgs, userText, streaming, respondOpts,
+    );
+    const result = await runWithResumeRecovery({
+      backendName: "claude-code",
+      isFirstTurn: wasFirstTurn,
+      sessionId,
+      errorPattern: /No conversation found with session ID/i,
+      runChild: () => executeWithArgs(args),
+      buildRecoveryRunChild: () => {
+        const recovered = [...args];
+        const i = recovered.indexOf("--resume");
+        if (i >= 0) recovered.splice(i, 2, "--session-id", sessionId);
+        return () => executeWithArgs(recovered);
+      },
+      onRecover: () => { this.firstTurn = true; },
+    });
+
+    this.firstTurn = false;
+    return result;
+  }
+
+  /**
+   * Spawn + parse the actual claude child for one turn. Extracted from
+   * respond() so the resume-recovery wrapper can re-invoke it with rewritten
+   * args on a "No conversation found" failure. All the heavy lifting
+   * (stream-json parsing, process-group cancel, timeout, registry tracking)
+   * lives here.
+   */
+  private async executeTurn(
+    args: string[],
+    userText: string,
+    streaming: boolean,
+    respondOpts: RespondOptions,
+  ): Promise<AgentReply> {
     const t0 = Date.now();
     // detached: true makes the spawned process the leader of its own process
     // group. We need that so cancel/timeout can SIGTERM the whole tree via
@@ -303,7 +345,9 @@ export class ClaudeCodeBackend implements AgentBackend {
       }
     }
 
-    this.firstTurn = false;
+    // NOTE: firstTurn flip lives in the respond() wrapper now so the
+    // recovery path's retry sees the correct value before we declare
+    // this session "resumable next time."
     return { text, inputTokens, outputTokens, elapsedMs };
   }
 }

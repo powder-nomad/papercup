@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { AgentBackend, AgentBackendOpts, AgentReply, RespondOptions } from "./registry.ts";
+import { runWithResumeRecovery } from "./_recovery.ts";
 
 /**
  * OpenAI Codex CLI backend. Uses `codex exec` per turn — first turn boots a
@@ -52,70 +53,96 @@ export class CodexBackend implements AgentBackend {
     const projectDirs = process.env.PROJECT_DIRS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [];
     const sandbox = process.env.CODEX_SANDBOX ?? "read-only";
 
-    let args: string[];
-    let prompt: string;
-
-    if (this.firstTurn || !this.threadId) {
-      // First turn: prefix system prompt to user text since codex has no --system flag.
-      // Sandbox + add-dir only apply to the first turn (they're locked in for the thread).
-      // Text mode passes no systemPrompt → just send the raw user text.
-      prompt = this.opts.systemPrompt
-        ? `<system>\n${this.opts.systemPrompt}\n</system>\n\n${userText}`
-        : userText;
-      args = [
-        "exec",
-        "--skip-git-repo-check",
-        "--json",
-        "--sandbox", sandbox,
-      ];
-      for (const dir of projectDirs) args.push("--add-dir", dir);
-    } else {
-      // Resume: only basic flags. Sandbox + add-dir inherit from the original thread.
-      prompt = userText;
-      args = [
-        "exec",
-        "resume",
-        this.threadId,
-        "--skip-git-repo-check",
-        "--json",
-      ];
-    }
-
-    if (this.opts.model) args.push("--model", this.opts.model);
-    args.push(prompt);
-
-    const t0 = Date.now();
-    const proc = spawn("codex", args, { stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp" });
-    this.inFlight = proc;
-    let stdout = "";
-    let stderr = "";
-    proc.stdout?.on("data", (c: Buffer) => (stdout += c.toString()));
-    proc.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
-    const code = await new Promise<number>((resolve, reject) => {
-      proc.on("error", reject);
-      proc.on("exit", (c) => resolve(c ?? -1));
-    }).finally(() => {
-      this.inFlight = undefined;
-    });
-    const elapsedMs = Date.now() - t0;
-
-    if (code !== 0) {
-      if (code === 143 || proc.killed) {
-        throw new Error("cancelled");
+    // Build either first-turn args (with sandbox + add-dir + system prompt
+    // prefix) or resume args (positional `resume <thread-id>`). Both shapes
+    // live in this helper so the resume-recovery wrapper can ask for a fresh
+    // first-turn build when codex says the thread is gone.
+    const buildArgs = (mode: "first" | "resume"): { args: string[]; prompt: string } => {
+      let args: string[];
+      let prompt: string;
+      if (mode === "first" || !this.threadId) {
+        prompt = this.opts.systemPrompt
+          ? `<system>\n${this.opts.systemPrompt}\n</system>\n\n${userText}`
+          : userText;
+        args = [
+          "exec",
+          "--skip-git-repo-check",
+          "--json",
+          "--sandbox", sandbox,
+        ];
+        for (const dir of projectDirs) args.push("--add-dir", dir);
+      } else {
+        prompt = userText;
+        args = [
+          "exec",
+          "resume",
+          this.threadId,
+          "--skip-git-repo-check",
+          "--json",
+        ];
       }
-      throw new Error(`codex exited ${code}: ${stderr.slice(-500)}`);
-    }
-
-    const parsed = parseCodexJsonl(stdout);
-    if (parsed.threadId) this.threadId = parsed.threadId;
-    this.firstTurn = false;
-
-    return {
-      text: parsed.text,
-      inputTokens: parsed.inputTokens,
-      outputTokens: parsed.outputTokens,
-      elapsedMs,
+      if (this.opts.model) args.push("--model", this.opts.model);
+      args.push(prompt);
+      return { args, prompt };
     };
+
+    // Spawn-and-parse closure factored out so the recovery helper can call
+    // it twice if the first attempt errors with "thread not found".
+    const runOnce = async (effectiveArgs: string[]): Promise<AgentReply> => {
+      const t0 = Date.now();
+      const proc = spawn("codex", effectiveArgs, { stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp" });
+      this.inFlight = proc;
+      let stdout = "";
+      let stderr = "";
+      proc.stdout?.on("data", (c: Buffer) => (stdout += c.toString()));
+      proc.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
+      const code = await new Promise<number>((resolve, reject) => {
+        proc.on("error", reject);
+        proc.on("exit", (c) => resolve(c ?? -1));
+      }).finally(() => {
+        this.inFlight = undefined;
+      });
+      const elapsedMs = Date.now() - t0;
+
+      if (code !== 0) {
+        if (code === 143 || proc.killed) throw new Error("cancelled");
+        throw new Error(`codex exited ${code}: ${stderr.slice(-500)}`);
+      }
+
+      const parsed = parseCodexJsonl(stdout);
+      if (parsed.threadId) this.threadId = parsed.threadId;
+      return {
+        text: parsed.text,
+        inputTokens: parsed.inputTokens,
+        outputTokens: parsed.outputTokens,
+        elapsedMs,
+      };
+    };
+
+    const wasFirstTurn = this.firstTurn || !this.threadId;
+    const { args } = buildArgs(wasFirstTurn ? "first" : "resume");
+    // Resume-recovery: if codex's resume errors with "thread not found"-style
+    // text, drop the resume positionals and retry as a first-turn spawn with
+    // the same papercup session backed by a NEW codex thread. Prior turns
+    // are lost (codex never persisted them or already dropped them) but the
+    // session functionally recovers. See _recovery.ts.
+    const result = await runWithResumeRecovery({
+      backendName: "codex",
+      isFirstTurn: wasFirstTurn,
+      sessionId: this.threadId ?? "(no-thread)",
+      errorPattern: /thread.{0,40}(?:not found|invalid|does not exist|no such)/i,
+      runChild: () => runOnce(args),
+      buildRecoveryRunChild: () => {
+        // Drop the dead threadId so buildArgs produces first-turn shape; the
+        // CLI assigns a new thread on success.
+        this.threadId = undefined;
+        const { args: freshArgs } = buildArgs("first");
+        return () => runOnce(freshArgs);
+      },
+      onRecover: () => { this.firstTurn = true; },
+    });
+    this.firstTurn = false;
+    return result;
   }
 
   getBackendId(): string | undefined {

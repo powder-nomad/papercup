@@ -1,5 +1,6 @@
 import { BaseCliBackend } from "./base-cli.ts";
 import type { AgentReply, RespondOptions } from "./registry.ts";
+import { runWithResumeRecovery } from "./_recovery.ts";
 
 /**
  * Google Gemini CLI backend. Flags verified against
@@ -51,42 +52,31 @@ export class GeminiCliBackend extends BaseCliBackend {
       if (!this.opts.permissionMode) args.push("--yolo");
     }
 
-    if (this.firstTurn) {
+    const wasFirstTurn = this.firstTurn;
+    if (wasFirstTurn) {
       args.push("--session-id", this.sessionId);
     } else {
       args.push("--resume", this.sessionId);
     }
 
-    let stdout: string;
-    let elapsedMs: number;
-    try {
-      const r = await this.runChild({ binary, args, cwd, userText });
-      stdout = r.stdout;
-      elapsedMs = r.elapsedMs;
-    } catch (err) {
-      // Recovery path: gemini persists sessions only after a successful turn
-      // completes. If the very first `--session-id <uuid>` spawn crashed,
-      // network-blipped, or got SIGTERM'd before persistence, every
-      // subsequent `--resume <uuid>` returns "Invalid session identifier"
-      // forever. Detect that, downgrade to a fresh --session-id under the
-      // same uuid, and retry once. Prior turns are lost (gemini never saved
-      // them) but the session functionally recovers.
-      const msg = (err as Error).message;
-      const recoverable = !this.firstTurn && /Invalid session identifier|Error resuming session/i.test(msg);
-      if (!recoverable) throw err;
-      console.warn(
-        `[backend:gemini-cli] resume failed for session=${this.sessionId} — ` +
-        `gemini has no record of it (likely crashed before first turn persisted). ` +
-        `Restarting under same uuid with --session-id; prior turns lost.`,
-      );
-      this.firstTurn = true;
-      // Rebuild args: replace the `--resume <uuid>` pair with `--session-id <uuid>`.
-      const resumeIdx = args.indexOf("--resume");
-      if (resumeIdx >= 0) args.splice(resumeIdx, 2, "--session-id", this.sessionId);
-      const r2 = await this.runChild({ binary, args, cwd, userText });
-      stdout = r2.stdout;
-      elapsedMs = r2.elapsedMs;
-    }
+    // Capture sessionId early so the recovery closure stays correct even
+    // if `this` is reassigned (it isn't today, but defensive).
+    const sessionId = this.sessionId;
+    const { stdout, elapsedMs } = await runWithResumeRecovery({
+      backendName: "gemini-cli",
+      isFirstTurn: wasFirstTurn,
+      sessionId,
+      errorPattern: /Invalid session identifier|Error resuming session/i,
+      runChild: () => this.runChild({ binary, args, cwd, userText }),
+      buildRecoveryRunChild: () => {
+        // `--resume <uuid>` → `--session-id <uuid>`
+        const recovered = [...args];
+        const i = recovered.indexOf("--resume");
+        if (i >= 0) recovered.splice(i, 2, "--session-id", sessionId);
+        return () => this.runChild({ binary, args: recovered, cwd, userText });
+      },
+      onRecover: () => { this.firstTurn = true; },
+    });
 
     let text = stdout.trim();
     let inputTokens = 0;
