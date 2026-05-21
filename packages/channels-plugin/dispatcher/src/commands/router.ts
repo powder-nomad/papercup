@@ -3,6 +3,7 @@ import {
   handleBind,
   handleUnbind,
   handleSessions,
+  handleStatus,
   handleRename,
   handleModel,
   handleEffort,
@@ -73,6 +74,9 @@ export async function dispatchInteraction(
         return
       case 'sessions':
         await handleSessions(interaction, ctx)
+        return
+      case 'status':
+        await handleStatus(interaction, ctx)
         return
       case 'rename':
         await handleRename(interaction, ctx)

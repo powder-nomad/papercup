@@ -276,6 +276,47 @@ export async function handleSessions(
   await interaction.editReply(rows.join('\n'))
 }
 
+export async function handleStatus(
+  interaction: ChatInputCommandInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+  const target = ctx.sessions.findLatestForChannel(interaction.channelId)
+  if (!target) {
+    await interaction.editReply(t(interaction.locale, 'status.noSession'))
+    return
+  }
+  const online = ctx.isPluginOnline(target.id)
+  const lines: string[] = []
+  lines.push(
+    t(interaction.locale, 'status.header', {
+      name: target.name,
+      transport: target.transport,
+      backend: target.backend,
+      dot: '·',
+      pluginState: t(interaction.locale, online ? 'status.pluginOnline' : 'status.pluginOffline'),
+    }),
+  )
+  lines.push(t(interaction.locale, 'status.lineModel', { value: target.model ?? '(backend default)' }))
+  if (target.effort) {
+    lines.push(t(interaction.locale, 'status.lineEffort', { value: target.effort }))
+  }
+  if (target.permissionMode) {
+    lines.push(t(interaction.locale, 'status.linePermissions', { value: target.permissionMode }))
+  } else {
+    const defaultPerm = target.transport === 'channels' ? 'bypassPermissions' : 'default'
+    lines.push(t(interaction.locale, 'status.linePermissionsDefault', { value: defaultPerm }))
+  }
+  if (target.channelId) {
+    lines.push(t(interaction.locale, 'status.lineChannel', { channelId: target.channelId }))
+  } else {
+    lines.push(t(interaction.locale, 'status.lineChannelNone'))
+  }
+  const idleMin = Math.floor((Date.now() - target.lastActiveAt) / 60_000)
+  lines.push(t(interaction.locale, 'status.lineIdle', { minutes: idleMin }))
+  await interaction.editReply(lines.join('\n'))
+}
+
 export async function handleRename(
   interaction: ChatInputCommandInteraction,
   ctx: CommandContext,

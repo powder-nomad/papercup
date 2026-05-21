@@ -118,6 +118,11 @@ const commands = [
     .setDescriptionLocalizations({ ko: '최근 세션 목록을 표시합니다 (현재 채널 바인드가 표시됨).' })
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('status')
+    .setDescription("Show this channel's session: transport, backend, model, effort, permissions, idle.")
+    .setDescriptionLocalizations({ ko: '이 채널 세션의 상태 (transport, backend, model, effort, 권한, 유휴 시간).' })
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('rename')
     .setDescription('Rename the session bound to THIS channel.')
     .setDescriptionLocalizations({ ko: '이 채널에 바인드된 세션의 이름을 변경합니다.' })

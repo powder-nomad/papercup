@@ -100,6 +100,52 @@ const messages = {
     ko: '아직 세션이 없습니다. 채널에서 `/bind`를 실행해 만들어보세요.',
   },
 
+  // status -----------------------------------------------------------------
+  'status.header': {
+    en: '📍 **Session `{name}`** ({transport} · {backend}) {dot} {pluginState}',
+    ko: '📍 **세션 `{name}`** ({transport} · {backend}) {dot} {pluginState}',
+  },
+  'status.pluginOnline': {
+    en: 'plugin online',
+    ko: '플러그인 연결됨',
+  },
+  'status.pluginOffline': {
+    en: 'plugin offline',
+    ko: '플러그인 미연결',
+  },
+  'status.lineModel': {
+    en: 'Model: `{value}`',
+    ko: '모델: `{value}`',
+  },
+  'status.lineEffort': {
+    en: 'Effort: `{value}`',
+    ko: 'Effort: `{value}`',
+  },
+  'status.linePermissions': {
+    en: 'Permissions: `{value}`',
+    ko: '권한 모드: `{value}`',
+  },
+  'status.linePermissionsDefault': {
+    en: 'Permissions: `{value}` (default)',
+    ko: '권한 모드: `{value}` (기본값)',
+  },
+  'status.lineChannel': {
+    en: 'Bound channel: <#{channelId}>',
+    ko: '바인드 채널: <#{channelId}>',
+  },
+  'status.lineChannelNone': {
+    en: 'Bound channel: _none_',
+    ko: '바인드 채널: _없음_',
+  },
+  'status.lineIdle': {
+    en: 'Idle: {minutes}m',
+    ko: '유휴: {minutes}분',
+  },
+  'status.noSession': {
+    en: '📭 No session bound to this channel. Run `/bind` to create one.',
+    ko: '📭 이 채널에 바인드된 세션이 없습니다. `/bind`를 실행하세요.',
+  },
+
   // rename -----------------------------------------------------------------
   'rename.success': {
     en: '✏️ Renamed to **{name}**.',
