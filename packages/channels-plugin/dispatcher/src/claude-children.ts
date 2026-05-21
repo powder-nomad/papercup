@@ -56,7 +56,8 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { makeLogger, type Logger } from './log.ts'
 
@@ -341,16 +342,83 @@ export class ClaudeChildManager {
   private writeRuntimeMcpConfig(opts: ClaudeChildOpts): string {
     if (!existsSync(opts.papercupHome)) mkdirSync(opts.papercupHome, { recursive: true, mode: 0o700 })
     const path = join(opts.papercupHome, 'runtime-mcp.json')
-    const config = {
-      mcpServers: {
-        'papercup-channels': {
-          command: 'bun',
-          args: [join(opts.pluginDir, 'server.ts')],
-        },
+    // Merge order (later wins on collision): ECC bundle → papercup-channels.
+    // papercup-channels MUST come last so a stray ECC server with the same
+    // name can never displace our own plugin.
+    //
+    // TODO: replace this hardcoded ECC merge with a config-driven mechanism
+    // (env var pointing at an additional .mcp.json to merge, or a list of
+    // symbolic bundle names). For now the operator gets the ECC bundle
+    // (github, context7, exa, memory, playwright, sequential-thinking)
+    // because that's what their normal claude sessions have, and channels
+    // mode should feel like a normal session.
+    const mcpServers: Record<string, unknown> = {
+      ...loadEccMcpServers(this.log),
+      'papercup-channels': {
+        command: 'bun',
+        args: [join(opts.pluginDir, 'server.ts')],
       },
     }
+    const config = { mcpServers }
     writeFileSync(path, JSON.stringify(config, null, 2), { mode: 0o600 })
     return path
+  }
+}
+
+/**
+ * Load MCP servers declared by the everything-claude-code plugin so channels-
+ * mode claude has the same MCP surface (github/context7/exa/memory/playwright/
+ * sequential-thinking) the operator has in their normal claude sessions.
+ *
+ * Lookup order:
+ *   1. ~/.claude/plugins/cache/everything-claude-code/everything-claude-code/<version>/.mcp.json
+ *      — what claude itself loads; version-pinned. Picks the highest version
+ *      directory by lexical sort if multiple are present.
+ *   2. ~/.claude/plugins/marketplaces/everything-claude-code/.mcp.json
+ *      — dev-mode source (not version-pinned). Used as fallback when no
+ *      cache install is present.
+ *
+ * Returns an empty object when ECC isn't installed or the file is unreadable
+ * — channels keeps working with just papercup-channels. All failures are
+ * logged at warn but never thrown.
+ */
+function loadEccMcpServers(log: Logger): Record<string, unknown> {
+  const home = homedir()
+  const cacheRoot = join(home, '.claude', 'plugins', 'cache', 'everything-claude-code', 'everything-claude-code')
+  const marketplacePath = join(home, '.claude', 'plugins', 'marketplaces', 'everything-claude-code', '.mcp.json')
+
+  let configPath: string | undefined
+  try {
+    if (existsSync(cacheRoot)) {
+      const versions = readdirSync(cacheRoot).sort()
+      const latest = versions[versions.length - 1]
+      if (latest) {
+        const candidate = join(cacheRoot, latest, '.mcp.json')
+        if (existsSync(candidate)) configPath = candidate
+      }
+    }
+  } catch (err) {
+    log.warn(`ecc cache lookup failed: ${(err as Error).message}`)
+  }
+  if (!configPath && existsSync(marketplacePath)) {
+    configPath = marketplacePath
+  }
+  if (!configPath) {
+    log.info('ecc plugin not installed; channels-mode claude will only have papercup-channels MCP')
+    return {}
+  }
+
+  try {
+    const raw = readFileSync(configPath, 'utf8')
+    const parsed = JSON.parse(raw) as { mcpServers?: Record<string, unknown> }
+    const servers = parsed.mcpServers ?? {}
+    log.info(
+      `merging ecc MCP bundle from ${configPath} (servers: ${Object.keys(servers).join(', ')})`,
+    )
+    return servers
+  } catch (err) {
+    log.warn(`failed to load ecc .mcp.json from ${configPath}: ${(err as Error).message}`)
+    return {}
   }
 }
 
