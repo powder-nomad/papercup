@@ -75,10 +75,6 @@ const messages = {
     en: '❌ `transport:channels` requires **tmux** on this host (not installed). Install it (e.g. `apt install tmux`) and restart the dispatcher, or use `transport:per-turn`.',
     ko: '❌ `transport:channels`를 사용하려면 이 호스트에 **tmux**가 설치되어 있어야 합니다 (미설치). `apt install tmux` 등으로 설치 후 디스패처를 재시작하거나 `transport:per-turn`을 사용하세요.',
   },
-  'bind.namedNotFound': {
-    en: 'No session named "{name}". Omit `name` to create a fresh one, or /sessions to list.',
-    ko: '"{name}"이라는 세션이 없습니다. `name`을 생략하면 새로 만들거나 /sessions로 목록을 확인하세요.',
-  },
   'bind.success': {
     en: '🔗 This channel is now bound to session **{name}** (transport: `{transport}`, backend: `{backend}`). Every message here routes to it.',
     ko: '🔗 이 채널이 세션 **{name}**(transport: `{transport}`, backend: `{backend}`)에 바인드되었습니다. 여기에 보내는 모든 메시지가 이 세션으로 라우팅됩니다.',

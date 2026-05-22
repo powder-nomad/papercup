@@ -73,16 +73,15 @@ export async function handleBind(
 
   // If a name was given, look it up. Otherwise, prefer reattaching the
   // existing session on this channel (so /bind is also "reactivate").
+  // When a name is given and no such session exists, create it on the
+  // spot — /bind + /rename is a common two-step that's worth collapsing.
   let target = nameOpt ? ctx.sessions.findByName(nameOpt) : ctx.sessions.findLatestForChannel(channelId)
-  if (nameOpt && !target) {
-    await interaction.editReply(t(interaction.locale, 'bind.namedNotFound', { name: nameOpt }))
-    return
-  }
   if (!target) {
     // Auto-pick per-turn for non-claude backends if transport not specified.
     const effectiveTransport: SessionTransportName | undefined =
       transportOpt ?? (backendOpt && backendOpt !== 'claude-code' ? 'per-turn' : undefined)
     target = await ctx.sessions.create({
+      name: nameOpt,
       channelId,
       transport: effectiveTransport,
       backend: backendOpt,
