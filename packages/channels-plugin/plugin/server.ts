@@ -126,6 +126,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async req => {
     }
   }
   const msgId = `m${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const preview = text.slice(0, 80).replace(/\s+/g, ' ')
+  process.stderr.write(
+    `papercup-channels-plugin: reply tool called chat_id=${chat_id} bytes=${text.length} preview="${preview}"\n`,
+  )
   const ok = sendFrame({
     type: 'reply',
     session: SESSION_ID,
@@ -233,13 +237,24 @@ async function handleInbound(frame: DispatcherToPlugin): Promise<void> {
       )
       return
     }
-    await mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content: frame.content,
-        meta: { chat_id: frame.chat_id, ...(frame.meta ?? {}) },
-      },
-    })
+    const preview = frame.content.slice(0, 80).replace(/\s+/g, ' ')
+    process.stderr.write(
+      `papercup-channels-plugin: -> claude notification chat_id=${frame.chat_id} bytes=${frame.content.length} preview="${preview}"\n`,
+    )
+    try {
+      await mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content: frame.content,
+          meta: { chat_id: frame.chat_id, ...(frame.meta ?? {}) },
+        },
+      })
+      process.stderr.write(`papercup-channels-plugin: <- claude notification ack chat_id=${frame.chat_id}\n`)
+    } catch (err) {
+      process.stderr.write(
+        `papercup-channels-plugin: notification send FAILED chat_id=${frame.chat_id}: ${err}\n`,
+      )
+    }
     return
   }
   if (frame.type === 'permission_verdict') {
