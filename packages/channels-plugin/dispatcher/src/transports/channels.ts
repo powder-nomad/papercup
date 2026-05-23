@@ -63,6 +63,15 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
    */
   private pendingEvents = new Map<string, DispatcherToPlugin[]>()
   private static readonly MAX_QUEUED_EVENTS = 20
+  /**
+   * Marks sessions whose bootstrap dialogs have been answered (claude is
+   * ready to consume channel notifications). Set by onChannelReady, cleared
+   * on plugin disconnect. Lets helloReceived drain a queue when the plugin
+   * connects AFTER bootstrap-done — without it, late-connecting plugins
+   * left events stuck forever because onChannelReady had already fired and
+   * skipped the drain (plugin wasn't connected yet).
+   */
+  private channelReady = new Set<string>()
 
   constructor(private init: TransportInit) {
     super()
@@ -214,6 +223,7 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
     this.claude.kill(sessionId)
     this.sessionChannelIds.delete(sessionId)
     this.pendingEvents.delete(sessionId)
+    this.channelReady.delete(sessionId)
     for (const [rid, p] of this.pendingPermissions) {
       if (p.sessionId === sessionId) this.pendingPermissions.delete(rid)
     }
@@ -265,6 +275,9 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
    * (now-ready) plugin in FIFO order.
    */
   private drainQueuedEvents(sessionId: string): void {
+    // Mark this session ready so a late-arriving helloReceived can drain
+    // even if onChannelReady fired before the plugin connected.
+    this.channelReady.add(sessionId)
     const queue = this.pendingEvents.get(sessionId)
     if (!queue || queue.length === 0) return
     if (!this.uds.isConnected(sessionId)) {
@@ -308,16 +321,21 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
 
     this.uds.on('helloReceived', (session, pid) => {
       this.log.info(`plugin online: session=${session}, pid=${pid}`)
-      // NOTE: we deliberately do NOT drain pending events here. The plugin
-      // connects to UDS early in claude's boot, often before claude has
-      // answered the dev-channels approval modal. Notifications sent during
-      // that window are silently dropped by claude's channel system. Instead,
-      // ClaudeChildManager fires onChannelReady (→ drainQueuedEvents) only
-      // after the bootstrap-dialog poller declares done.
+      // We deliberately do NOT drain when bootstrap dialogs are still
+      // unanswered — claude silently drops channel notifications during
+      // that window. But if onChannelReady has ALREADY fired (channelReady
+      // set), the plugin just connected late, and we need to drain now
+      // because helloReceived is the last chance — nothing else will trigger.
+      if (this.channelReady.has(session)) {
+        this.drainQueuedEvents(session)
+      }
     })
 
     this.uds.on('pluginDisconnected', session => {
       this.log.warn(`plugin offline: session=${session}`)
+      // Next respawn will fire onChannelReady again — clear so the late-
+      // drain path in helloReceived doesn't fire prematurely on reconnect.
+      this.channelReady.delete(session)
     })
 
     this.uds.on('permissionRequest', frame => {
