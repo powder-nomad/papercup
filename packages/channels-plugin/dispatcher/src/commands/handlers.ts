@@ -316,6 +316,31 @@ export async function handleStatus(
   await interaction.editReply(lines.join('\n'))
 }
 
+/**
+ * /respawn — kill the agent child (if alive) and spawn a fresh one for this
+ * channel's bound session. Useful when /status shows "plugin offline" and
+ * the operator wants to revive without sending a fake user message.
+ */
+export async function handleRespawn(
+  interaction: ChatInputCommandInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+  const target = ctx.sessions.findLatestForChannel(interaction.channelId)
+  if (!target) {
+    await interaction.editReply(t(interaction.locale, 'common.noSessionHere'))
+    return
+  }
+  const wasOnline = ctx.isPluginOnline(target.id)
+  if (wasOnline) ctx.killFor(target.id)
+  ctx.spawnFor(target)
+  await interaction.editReply(
+    t(interaction.locale, wasOnline ? 'respawn.killedAndRespawned' : 'respawn.spawned', {
+      name: target.name,
+    }),
+  )
+}
+
 export async function handleRename(
   interaction: ChatInputCommandInteraction,
   ctx: CommandContext,

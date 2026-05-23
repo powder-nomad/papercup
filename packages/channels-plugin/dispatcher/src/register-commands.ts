@@ -123,6 +123,11 @@ const commands = [
     .setDescriptionLocalizations({ ko: '이 채널 세션의 상태 (transport, backend, model, effort, 권한, 유휴 시간).' })
     .toJSON(),
   new SlashCommandBuilder()
+    .setName('respawn')
+    .setDescription("Kill (if alive) + respawn this channel's agent. Use when /status shows plugin offline.")
+    .setDescriptionLocalizations({ ko: '이 채널 에이전트를 종료 후 재실행합니다. `/status`에서 플러그인이 오프라인일 때 사용하세요.' })
+    .toJSON(),
+  new SlashCommandBuilder()
     .setName('rename')
     .setDescription('Rename the session bound to THIS channel.')
     .setDescriptionLocalizations({ ko: '이 채널에 바인드된 세션의 이름을 변경합니다.' })

@@ -142,6 +142,16 @@ const messages = {
     ko: '📭 이 채널에 바인드된 세션이 없습니다. `/bind`를 실행하세요.',
   },
 
+  // respawn ----------------------------------------------------------------
+  'respawn.spawned': {
+    en: '🚀 Spawned agent for **{name}**.',
+    ko: '🚀 **{name}** 세션의 에이전트를 새로 실행했습니다.',
+  },
+  'respawn.killedAndRespawned': {
+    en: '🔁 Killed and respawned agent for **{name}**.',
+    ko: '🔁 **{name}** 세션의 에이전트를 종료 후 재실행했습니다.',
+  },
+
   // rename -----------------------------------------------------------------
   'rename.success': {
     en: '✏️ Renamed to **{name}**.',
