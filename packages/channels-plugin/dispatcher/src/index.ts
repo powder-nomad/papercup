@@ -165,12 +165,15 @@ async function main(): Promise<void> {
       ;(transport as unknown as ChannelsTransportLike).bindChannel?.(session.id, session.channelId)
     }
     contextWarnTier.delete(session.id)
-    // Resume only when (a) we've spawned this session before in this
-    // process and (b) claude has actually persisted the session to disk.
-    // Resuming an un-persisted session makes `claude --resume` exit
-    // silently with "session not found", which kills tmux and leaves the
-    // dispatcher waiting forever for a plugin hello that never comes.
-    const resume = everSpawned.has(session.id) && claudeSessionPersisted(session.id)
+    // Resume when EITHER (a) we've spawned this session before in this
+    // process (so a re-spawn with --session-id would collide with the
+    // in-memory session), OR (b) claude has actually persisted the
+    // session to disk (--session-id on an existing on-disk UUID also
+    // exits silently). The first condition catches mid-process respawns
+    // before disk flush; the second catches first-spawns after dispatcher
+    // restart. AND-ing them was wrong — first-spawn of a persisted
+    // session always failed, because everSpawned starts empty.
+    const resume = everSpawned.has(session.id) || claudeSessionPersisted(session.id)
     transport.ensureRunning({
       sessionId: session.id,
       backend: session.backend,
