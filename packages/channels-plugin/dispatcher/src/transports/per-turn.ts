@@ -248,6 +248,22 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
               msgId: `pt-${Date.now()}`,
               text: reply.text.trim(),
             })
+          } else {
+            // Backend exited cleanly but produced no user-facing text — common
+            // with gemini-cli when the turn ends on a tool call (e.g.
+            // update_topic, write_file) instead of a closing message. Silent
+            // drop is the worst UX: heartbeat times out with no signal. Emit
+            // a placeholder so the user knows the turn completed.
+            this.log.warn(
+              `respond returned empty text (session=${sessionId} backend=${s.backendName}); ` +
+              `emitting placeholder so the user isn't left hanging`,
+            )
+            this.emit('reply', {
+              sessionId,
+              channelId,
+              msgId: `pt-empty-${Date.now()}`,
+              text: '_(no reply text — agent finished on a tool call instead of a message; ask again if you expected one)_',
+            })
           }
           if (reply.inputTokens > 0 || reply.outputTokens > 0) {
             this.emit('turnComplete', {
