@@ -265,8 +265,15 @@ export class ClaudeChildManager {
     sessionName: string,
     onChannelReady?: () => void,
   ): void {
-    const TRUST_POLL_MS = 10_000
+    // Deadline raised from 10s to 15s and post-dialog grace from 1.5s to 5s
+    // because the resume-from-summary picker (only fires on long-session
+    // --resume) appears AFTER claude finishes loading the session jsonl.
+    // For a 13MB session that load takes ~1-2s, so a 1.5s grace exits
+    // before the picker surfaces — the poller would declare done and leave
+    // claude wedged at the picker forever. 5s comfortably catches it.
+    const TRUST_POLL_MS = 15_000
     const INTERVAL_MS = 500
+    const POST_DIALOG_GRACE_MS = 5_000
     const deadline = Date.now() + TRUST_POLL_MS
     let seenDialogAt = 0
     let acceptedCount = 0
@@ -292,8 +299,11 @@ export class ClaudeChildManager {
         fireReady()
         return
       }
-      // If we saw a dialog ≥1.5s ago and nothing new, assume bootstrap is done.
-      if (seenDialogAt > 0 && Date.now() - seenDialogAt > 1500) {
+      // If we saw a dialog ≥POST_DIALOG_GRACE_MS ago and nothing new, assume
+      // bootstrap is done. Long grace catches late-appearing pickers like
+      // resume-from-summary (only fires after claude finishes loading the
+      // session jsonl, which can take a couple seconds for large sessions).
+      if (seenDialogAt > 0 && Date.now() - seenDialogAt > POST_DIALOG_GRACE_MS) {
         this.log.info(
           `bootstrap dialogs done (session=${sessionId}, accepted=${acceptedCount})`,
         )
