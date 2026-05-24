@@ -437,6 +437,21 @@ const CLAUDE_BOOTSTRAP_DIALOGS: Array<{ name: string; match: [string, string] }>
     name: 'dev-channels warning',
     match: ['Loading development channels', 'local development'],
   },
+  {
+    // Appears on --resume of a long-lived session (1d+, ~150k+ tokens):
+    //   "Resuming the full session will consume a substantial portion of
+    //    your usage limits. We recommend resuming from a summary."
+    //   1. Resume from summary (recommended)
+    //   2. Resume full session as-is
+    //   3. Don't ask me again
+    // Without auto-accept, claude sits forever waiting for arrow+Enter
+    // in a headless tmux pane, and every new Discord message queues but
+    // never reaches claude. Picking '1' (recommended summary resume) is
+    // the safe default for a long-running bot — full-as-is would burn
+    // ~180k tokens on every reaper-driven respawn.
+    name: 'resume-from-summary picker',
+    match: ['Resume from summary', 'Resume full session as-is'],
+  },
 ]
 
 function tmuxSessionNameFor(sessionId: string): string {
