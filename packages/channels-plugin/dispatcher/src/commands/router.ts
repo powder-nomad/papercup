@@ -23,6 +23,7 @@ import {
   handleHangup,
 } from './handlers.ts'
 import { handleCron, handleQueue, handleScheduler } from './scheduler-cmds.ts'
+import { handleLimitHandler } from './limit-handler-cmds.ts'
 import type { CommandContext } from './types.ts'
 
 /**
@@ -136,6 +137,9 @@ export async function dispatchInteraction(
         return
       case 'scheduler':
         await handleScheduler(interaction, ctx)
+        return
+      case 'limit-handler':
+        await handleLimitHandler(interaction, ctx)
         return
       default:
         if (interaction.deferred || interaction.replied) return

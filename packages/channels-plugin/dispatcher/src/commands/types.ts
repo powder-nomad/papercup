@@ -3,7 +3,7 @@ import type { GuildConfigStore } from '../state/guild-config.ts'
 import type { VoiceService } from '../voice/voice-line.ts'
 import type { Scheduler } from '../scheduler/index.ts'
 import type { SchedulerAcl } from '../scheduler/acl.ts'
-import type { AllowlistEntry } from '../scheduler/store.ts'
+import type { AllowlistEntry, LimitConfig, LimitMode } from '../scheduler/store.ts'
 
 /**
  * Narrow API the /scheduler allow|deny|allowlist handler needs from the
@@ -14,6 +14,19 @@ export type SchedulerAllowlistApi = {
   add(userId: string, addedBy: string): void
   remove(userId: string): boolean
   list(): AllowlistEntry[]
+}
+
+/**
+ * Narrow API for /limit-handler. Reads + writes the `limit_config` row for a
+ * session via `SchedulerStore`. `show` returns the effective config (defaults
+ * applied) so the slash handler doesn't duplicate the watcher's resolution
+ * logic.
+ */
+export type SchedulerLimitApi = {
+  show(sessionId: string): LimitConfig
+  setMode(sessionId: string, mode: LimitMode): LimitConfig
+  setNudge(sessionId: string, text: string): LimitConfig
+  setGraceMs(sessionId: string, graceMs: number): LimitConfig
 }
 
 /**
@@ -71,4 +84,8 @@ export type CommandContext = {
   scheduler?: Scheduler
   schedulerAcl?: SchedulerAcl
   schedulerAllowlist?: SchedulerAllowlistApi
+  /**
+   * Limit-handler API (F2). Undefined when scheduler init fails.
+   */
+  schedulerLimit?: SchedulerLimitApi
 }

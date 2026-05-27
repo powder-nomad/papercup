@@ -473,6 +473,78 @@ const commands = [
         .setDescriptionLocalizations({ ko: '현재 allowlist 멤버 조회.' }),
     )
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName('limit-handler')
+    .setDescription('Configure per-session backend usage-limit auto-resume.')
+    .setDescriptionLocalizations({ ko: '세션별 백엔드 사용 한도 자동 재개 설정.' })
+    .addSubcommand(s =>
+      s
+        .setName('show')
+        .setDescription('Show current limit-handler config for a session.')
+        .setDescriptionLocalizations({ ko: '현재 limit-handler 설정 조회.' })
+        .addStringOption(o =>
+          o.setName('session').setDescription('Target session name or id. Defaults to this channel\'s session.')
+           .setDescriptionLocalizations({ ko: '세션 이름/ID. 생략 시 채널의 세션.' })
+           .setRequired(false),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('mode')
+        .setDescription('Set how this session reacts to backend usage-limit hits.')
+        .setDescriptionLocalizations({ ko: '사용 한도 도달 시 동작 모드 설정.' })
+        .addStringOption(o =>
+          o.setName('mode').setDescription('auto-nudge | ask-user (deferred) | off')
+           .setDescriptionLocalizations({ ko: 'auto-nudge | ask-user (보류) | off' })
+           .setRequired(true)
+           .addChoices(
+             { name: 'auto-nudge', value: 'auto-nudge' },
+             { name: 'ask-user (deferred)', value: 'ask-user' },
+             { name: 'off', value: 'off' },
+           ),
+        )
+        .addStringOption(o =>
+          o.setName('session').setDescription('Target session name or id. Defaults to this channel\'s session.')
+           .setDescriptionLocalizations({ ko: '세션 이름/ID. 생략 시 채널의 세션.' })
+           .setRequired(false),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('set-nudge')
+        .setDescription('Set the prompt sent after the limit resets (auto-nudge mode).')
+        .setDescriptionLocalizations({ ko: '한도 리셋 후 보낼 프롬프트 설정.' })
+        .addStringOption(o =>
+          o.setName('text').setDescription('Nudge text (1..500 chars).')
+           .setDescriptionLocalizations({ ko: '프롬프트 (1..500자).' })
+           .setRequired(true)
+           .setMaxLength(500),
+        )
+        .addStringOption(o =>
+          o.setName('session').setDescription('Target session name or id. Defaults to this channel\'s session.')
+           .setDescriptionLocalizations({ ko: '세션 이름/ID. 생략 시 채널의 세션.' })
+           .setRequired(false),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('set-grace')
+        .setDescription('Extra seconds to wait after the limit reset before sending the nudge.')
+        .setDescriptionLocalizations({ ko: '리셋 후 nudge 발송까지 대기할 추가 초 수.' })
+        .addIntegerOption(o =>
+          o.setName('seconds').setDescription('0..3600 seconds.')
+           .setDescriptionLocalizations({ ko: '0..3600초.' })
+           .setRequired(true)
+           .setMinValue(0)
+           .setMaxValue(3600),
+        )
+        .addStringOption(o =>
+          o.setName('session').setDescription('Target session name or id. Defaults to this channel\'s session.')
+           .setDescriptionLocalizations({ ko: '세션 이름/ID. 생략 시 채널의 세션.' })
+           .setRequired(false),
+        ),
+    )
+    .toJSON(),
 ]
 
 const rest = new REST({ version: '10' }).setToken(token)

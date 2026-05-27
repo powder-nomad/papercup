@@ -228,8 +228,8 @@ async function tickOnce(deps) {
 
 ## Phasing
 
-- **F1 (week 1)** — cron + queue + auth + storage + slash commands. No limit detection.
-- **F2 (week 2)** — limit-watcher for claude-code with `auto-nudge` mode.
+- **F1 (week 1) — SHIPPED** — cron + queue + auth + storage + slash commands. No limit detection.
+- **F2 (week 2) — SHIPPED** — limit-watcher for claude-code with `auto-nudge` mode + `/limit-handler` slash commands.
 - **F3 (week 3)** — `ask-user` mode via DM round-trip; gemini matcher (best-effort).
 - **Later** — allowlist UI polish, per-job timezone override, last-prompt cache.
 
