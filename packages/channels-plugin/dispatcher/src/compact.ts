@@ -226,8 +226,11 @@ export async function digestClaudeTranscript(
 }
 
 /**
- * One-shot `claude -p` summarizer. Plan mode (read-only). --bare to skip
- * hooks/LSP/CLAUDE.md for a snappy boot.
+ * One-shot `claude -p` summarizer. Plan mode (read-only).
+ *
+ * Note: `--bare` is intentionally NOT used — it skips loading the user's
+ * credentials in claude 2.1.x and causes the child to exit code=1 with
+ * "Not logged in" on stdout.
  */
 async function summarizeOneShot(
   digest: string,
@@ -236,7 +239,6 @@ async function summarizeOneShot(
 ): Promise<string> {
   const args: string[] = [
     '-p',
-    '--bare',
     '--permission-mode', 'plan',
     '--output-format', 'json',
   ]
@@ -263,7 +265,6 @@ async function seedNewSession(
 ): Promise<void> {
   const args: string[] = [
     '-p',
-    '--bare',
     '--session-id', newSessionId,
     '--output-format', 'json',
   ]
@@ -317,7 +318,9 @@ async function runClaudeJson(
       clearTimeout(timer)
       if (timedOut) return
       if (code !== 0) {
-        reject(new Error(`${tag} exited code=${code}; stderr=${stderr.slice(-500) || '(empty)'}`))
+        const stderrTail = stderr.slice(-500) || '(empty)'
+        const stdoutTail = stdout.slice(-500) || '(empty)'
+        reject(new Error(`${tag} exited code=${code}; stderr=${stderrTail}; stdout=${stdoutTail}`))
         return
       }
       try {
