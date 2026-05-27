@@ -422,6 +422,7 @@ async function main(): Promise<void> {
     inputTokens: number,
     source: 'turn' | 'scan',
   ): void {
+    if (COMPACT_POLICY_MODE === 'off') return
     if (!session.channelId) return
     const channelId = session.channelId
     const thresholds = computeThresholds(session.model, COMPACT_POLICY_CONFIG)
@@ -487,9 +488,16 @@ async function main(): Promise<void> {
         )
         const ok = channelsTransport.sendNativeCompact(session.id)
         if (!ok) {
-          // tmux session is dead — fall back to external fork+summarize.
-          log.warn(`native /compact unavailable for ${session.id}; falling back to compactSession`)
-          await runFallbackCompact(session, channelId)
+          // tmux session is dead — surface the failure instead of silently
+          // reformatting via external fork+summarize, which Paul has flagged
+          // as the wrong UX for channels sessions.
+          log.warn(`native /compact unavailable for ${session.id}; channels session not in tmux`)
+          await discord.postNotice(
+            channelId,
+            t(defaultLocale(), 'notice.autoCompactFailed', {
+              error: `channels session ${session.name} is not running in tmux`,
+            }),
+          )
         } else {
           // Native compact runs in-session; reset our warn-tier dedupe so the
           // next-turn evaluator can re-arm. claude itself will emit the
@@ -644,16 +652,22 @@ async function main(): Promise<void> {
     }
   }
 
-  // Boot scan: catch sessions that grew past the threshold while the
-  // dispatcher was down. Runs after Discord is online so postNotice works.
-  scanAllSessions()
-
-  const contextScanTimer = setInterval(scanAllSessions, CONTEXT_SCAN_INTERVAL_MS)
-  contextScanTimer.unref()
-  log.info(
-    `context scanner: interval=${CONTEXT_SCAN_INTERVAL_MS}ms, policy=${COMPACT_POLICY_MODE}, ` +
-    `pcts=warn${COMPACT_POLICY_CONFIG.warnPct}/danger${COMPACT_POLICY_CONFIG.dangerPct}/auto${COMPACT_POLICY_CONFIG.autoCompactPct}`,
-  )
+  // Scanner only runs when the policy isn't 'off'. The evaluator also
+  // short-circuits on 'off', but skipping the timer entirely saves the
+  // periodic stat() calls and keeps the log line honest.
+  if (COMPACT_POLICY_MODE !== 'off') {
+    // Boot scan: catch sessions that grew past the threshold while the
+    // dispatcher was down. Runs after Discord is online so postNotice works.
+    scanAllSessions()
+    const contextScanTimer = setInterval(scanAllSessions, CONTEXT_SCAN_INTERVAL_MS)
+    contextScanTimer.unref()
+    log.info(
+      `context scanner: interval=${CONTEXT_SCAN_INTERVAL_MS}ms, policy=${COMPACT_POLICY_MODE}, ` +
+      `pcts=warn${COMPACT_POLICY_CONFIG.warnPct}/danger${COMPACT_POLICY_CONFIG.dangerPct}/auto${COMPACT_POLICY_CONFIG.autoCompactPct}`,
+    )
+  } else {
+    log.info('context scanner: disabled (PAPERCUP_COMPACT_POLICY=off)')
+  }
 
   /**
    * Voice utterance → transport event. Voice and text share the same session,

@@ -171,7 +171,7 @@ test('loadPolicyFromEnv: empty / non-numeric values fall back to defaults', () =
 
 /* ----------------------------- policy mode ----------------------------- */
 
-test('resolvePolicyMode defaults to auto when env missing', () => {
+test('resolvePolicyMode defaults to off when env missing', () => {
   assert.equal(resolvePolicyMode({}), DEFAULT_POLICY_MODE)
   assert.equal(resolvePolicyMode({ PAPERCUP_COMPACT_POLICY: '' }), DEFAULT_POLICY_MODE)
 })

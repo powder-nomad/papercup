@@ -725,8 +725,9 @@ export async function handleCompact(
   // Channels-mode sessions: dispatch claude's native /compact via tmux
   // send-keys. Same session id, no fork, claude renders the compaction
   // inline and the post-compact summary lands in the channel via the
-  // normal MCP `reply` tool. Fall through to compactSession() only when
-  // the tmux session is dead (channels child crashed).
+  // normal MCP `reply` tool. No external-summarizer fallback — that
+  // reformat behavior is not appropriate for channels sessions; if the
+  // tmux child is dead, surface the failure so the user can re-spawn.
   if (target.transport === 'channels') {
     const ok = ctx.nativeCompactForChannelsSession(target.id)
     if (ok) {
@@ -734,12 +735,13 @@ export async function handleCompact(
         `✅ Native \`/compact\` dispatched to **${target.name}**. ` +
         `Watch this channel for claude's summary (no new session, same binding).`,
       )
-      return
+    } else {
+      await interaction.editReply(
+        `❌ Channels session **${target.name}** is not running in tmux right now. ` +
+        `Send a new message to respawn it, then retry \`/compact\`.`,
+      )
     }
-    await interaction.editReply(
-      `⚠️ Channels session **${target.name}** is not running in tmux right now; ` +
-      `falling back to external fork+summarize.`,
-    )
+    return
   }
 
   let lastEditAt = 0

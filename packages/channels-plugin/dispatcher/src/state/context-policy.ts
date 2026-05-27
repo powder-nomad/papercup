@@ -25,7 +25,11 @@ export const DEFAULT_AUTO_COMPACT_PCT = 92
 /** What the dispatcher should do about a session at its current usage. */
 export type CompactPolicyMode = 'off' | 'warn-only' | 'auto'
 
-export const DEFAULT_POLICY_MODE: CompactPolicyMode = 'auto'
+// Default to 'off' — the watchdog over-fires on long-running channels
+// sessions (transcripts grow without bound; bytes ÷ 4 heuristic over-counts)
+// and emits a stream of warn/danger/compact-failed notices. Operators can
+// re-enable explicitly via PAPERCUP_COMPACT_POLICY=auto.
+export const DEFAULT_POLICY_MODE: CompactPolicyMode = 'off'
 
 export type PolicyConfig = {
   warnPct: number
