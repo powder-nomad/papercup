@@ -243,8 +243,7 @@ async function summarizeOneShot(
   if (model) args.push('--model', model)
   if (projectDir) args.push('--add-dir', projectDir)
   const prompt = `${COMPACT_INSTRUCTIONS}\n\n--- BEGIN TRANSCRIPT ---\n\n${digest}\n\n--- END TRANSCRIPT ---`
-  args.push(prompt)
-  const json = await runClaudeJson(args, SUMMARIZER_TIMEOUT_MS, 'summarizer')
+  const json = await runClaudeJson(args, SUMMARIZER_TIMEOUT_MS, 'summarizer', prompt)
   return extractResultText(json).trim()
 }
 
@@ -281,14 +280,22 @@ async function runClaudeJson(
   args: string[],
   timeoutMs: number,
   tag: string,
+  stdinPayload?: string,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    log.info(`spawn (${tag}): claude ${args.slice(0, -1).join(' ')} <prompt>`)
+    const usingStdin = stdinPayload !== undefined
+    log.info(`spawn (${tag}): claude ${args.join(' ')}${usingStdin ? ' <stdin-prompt>' : ''}`)
     const proc = spawn('claude', args, {
       cwd: '/tmp',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [usingStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       env: { ...process.env },
     })
+    if (usingStdin && proc.stdin) {
+      proc.stdin.on('error', err => {
+        log.warn(`${tag} stdin error: ${(err as Error).message}`)
+      })
+      proc.stdin.end(stdinPayload, 'utf8')
+    }
     let stdout = ''
     let stderr = ''
     let timedOut = false
@@ -300,8 +307,8 @@ async function runClaudeJson(
       reject(new Error(`${tag} timed out after ${timeoutMs}ms`))
     }, timeoutMs)
     timer.unref()
-    proc.stdout.on('data', (c: Buffer) => { stdout += c.toString('utf8') })
-    proc.stderr.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
+    proc.stdout!.on('data', (c: Buffer) => { stdout += c.toString('utf8') })
+    proc.stderr!.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
     proc.on('error', err => {
       clearTimeout(timer)
       reject(err)
