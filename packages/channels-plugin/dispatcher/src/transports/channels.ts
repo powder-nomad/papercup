@@ -101,6 +101,16 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
     if (this.udsStarted) return
     await this.uds.start()
     this.udsStarted = true
+    if (this.tmuxAvailable) {
+      // Pick up any papercup-* tmux sessions left running by a previous
+      // dispatcher (graceful restart, crash, manual kill). Without this the
+      // new process sees an empty `tracked` map and can't manage the live
+      // sessions — native /compact, reaper, kill all silently no-op.
+      const adopted = this.claude.adoptExisting()
+      if (adopted.length > 0) {
+        this.log.info(`adopted ${adopted.length} orphan tmux session(s): ${adopted.join(', ')}`)
+      }
+    }
   }
 
   setAllowlistCheck(check: AllowlistCheck): void {

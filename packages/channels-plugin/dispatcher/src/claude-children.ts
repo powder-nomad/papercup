@@ -113,6 +113,46 @@ export class ClaudeChildManager {
     }
   }
 
+  /**
+   * Adopt every `papercup-*` tmux session that exists on the host into the
+   * tracked map. Called once at boot (or after a dispatcher restart) so the
+   * new process picks up management of sessions that the previous dispatcher
+   * spawned — without this, `isAlive`/`kill`/`sendNativeCompact` all see an
+   * empty map and miss the running children, plus the boot-loop respawn
+   * would re-attempt `tmux new-session` with a colliding name on every
+   * bound session.
+   *
+   * The MCP plugin inside each adopted session reconnects to the new UDS
+   * server on its own (250ms→5s backoff per `plugin/server.ts`), so this
+   * adoption only needs to handle the dispatcher-side bookkeeping.
+   *
+   * Returns the list of adopted session ids — useful for logging at boot.
+   */
+  adoptExisting(): string[] {
+    const adopted: string[] = []
+    try {
+      const r = spawnSync('tmux', ['ls', '-F', '#{session_name}'], {
+        encoding: 'utf8',
+        timeout: 2000,
+      })
+      // tmux ls exits 1 with "no server running" / "no sessions" on a clean
+      // host — both are non-failures from our perspective.
+      if (r.status !== 0) return adopted
+      const lines = r.stdout.split('\n').map(s => s.trim()).filter(Boolean)
+      for (const name of lines) {
+        if (!name.startsWith('papercup-')) continue
+        const sessionId = name.slice('papercup-'.length)
+        if (this.tracked.has(sessionId)) continue
+        this.tracked.set(sessionId, { sessionName: name, spawnedAt: Date.now() })
+        adopted.push(sessionId)
+        this.log.info(`adopted existing tmux session: ${name}`)
+      }
+    } catch (err) {
+      this.log.warn(`adoptExisting failed: ${(err as Error).message}`)
+    }
+    return adopted
+  }
+
   isAlive(sessionId: string): boolean {
     const t = this.tracked.get(sessionId)
     if (!t) return false
