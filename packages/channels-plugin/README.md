@@ -188,6 +188,71 @@ Next message in the channel respawns via `--resume`, picking up the transcript.
 | Inbound Discord messages have empty `content` | **Message Content Intent** isn't enabled in the Discord dev portal. |
 | Bot replies in Discord but the plugin process keeps respawning | UDS socket got deleted or `~/.papercup-channels/` perms changed. Both should be `0o700`/`0o600`. |
 
+## Scheduler — `/cron`, `/queue`, `/scheduler`
+
+The dispatcher carries a small scheduler subsystem (`DESIGN-scheduler.md`)
+that fires prompts into a session as if a user typed them. Three surfaces:
+
+- `/cron add expr:"0 9 * * *" prompt:"…" [session:<name|id>]` — recurring
+  prompt evaluated against host-local TZ. If `session:` is omitted, the
+  channel's bound session is used.
+- `/cron list [session:…]`, `/cron edit id:<8-char|full> enabled:…`,
+  `/cron delete id:<8-char|full>`.
+- `/queue add at:"+2h" | "23:30" | "<ISO 8601>" prompt:"…" [session:…]` —
+  one-shot prompt. Accepted `at` forms: `+Nh|m|d` relative delta (cap 30d),
+  24h clock `HH:mm` (next occurrence in host TZ), or ISO 8601.
+- `/queue list`, `/queue delete id:…`.
+- `/scheduler allow user:@<user>` / `deny` / `allowlist` — owner-only.
+
+### Auth model
+
+- Bot owner (env `BOT_OWNER_ID`) can manage every job.
+- Allowlisted users (added via `/scheduler allow`) can manage **only their
+  own** jobs.
+- Empty `BOT_OWNER_ID` means no one is owner — write commands all reject.
+- List commands exclude other users' jobs for non-owners.
+
+### Persistence
+
+SQLite at `${PAPERCUP_HOME:-~/.papercup-channels}/scheduler.db` with WAL
+journaling. Three tables: `jobs`, `allowlist`, `limit_config` (last is
+reserved for F2 limit-watcher; no slash command for it yet). All timestamps
+are UTC epoch ms; cron expressions are evaluated in the host IANA TZ but the
+abbreviation+offset (e.g. `KST(UTC+9)`) is what gets rendered in replies —
+the IANA name is never shown.
+
+### Timezone / DST gotcha (F1 — known limitation)
+
+Cron expressions are interpreted via `cron-parser`'s `{ tz }` iterator. The
+iterator is DST-aware but **skips fires that land inside the spring-forward
+gap**. Concretely, in a TZ that observes DST:
+
+- **Spring-forward** (e.g. clocks 01:59 → 03:00): wall-clock 02:00 doesn't
+  exist that day. A pattern like `0 2 * * *` is silently skipped — one
+  missed fire per affected job per year.
+- **Fall-back** (clocks 03:00 → 02:00): 02:00 happens twice; cron-parser
+  fires once at the first occurrence. Correct, no action needed.
+
+For a KST-only deployment (the current default) the gap never opens, so
+this is dead code in practice. If you run the dispatcher in a DST zone and
+care about not-missing the 02:00-ish fire, file an issue — we'll switch to
+the catch-up variant (`DESIGN-scheduler.md` §DST option B).
+
+### Operational notes
+
+- Tick frequency: 1s (see `TICK_MS` / `MAX_CONSECUTIVE_FAILURES` in
+  `dispatcher/src/scheduler/scheduler.ts`).
+- A scheduled fire that hits a session with no bound channel disables the
+  job (no place for a reply). Re-`/bind`, then `/cron edit … enabled:true`.
+- A fire whose target session no longer exists also disables itself.
+- Consecutive-failure cap: 5. Beyond the cap the job is disabled (cron and
+  queue both).
+- Catch-up after dispatcher restart is **not** implemented for F1 — jobs
+  whose `next_fire_at` slipped past while the dispatcher was down fire on
+  the next tick anyway (any past time satisfies `<= now`), which means a
+  dispatcher restart can produce a burst of fires for stale jobs. Disable
+  noisy jobs before a long-planned restart if that matters.
+
 ## Voice — env vars
 
 These tune the voice subsystem (defaults in parentheses):

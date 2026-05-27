@@ -328,6 +328,151 @@ const commands = [
     .setDescription('Bot leaves the voice channel. Alias for /voice-leave (text session preserved).')
     .setDescriptionLocalizations({ ko: '봇이 음성 채널에서 나갑니다. /voice-leave의 별칭 (텍스트 세션 보존).' })
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName('cron')
+    .setDescription('Recurring cron prompts that fire into a session.')
+    .setDescriptionLocalizations({ ko: '세션에 주기적으로 프롬프트를 전송하는 cron 작업.' })
+    .addSubcommand(s =>
+      s
+        .setName('add')
+        .setDescription('Register a new cron job.')
+        .setDescriptionLocalizations({ ko: '새로운 cron 작업을 등록합니다.' })
+        .addStringOption(o =>
+          o.setName('expr').setDescription('Cron expression, e.g. "0 9 * * *".')
+           .setDescriptionLocalizations({ ko: 'cron 표현식 (예: "0 9 * * *").' })
+           .setRequired(true).setMaxLength(120),
+        )
+        .addStringOption(o =>
+          o.setName('prompt').setDescription('Prompt body to send on each fire.')
+           .setDescriptionLocalizations({ ko: '각 발화 시 전송할 프롬프트.' })
+           .setRequired(true).setMaxLength(1800),
+        )
+        .addStringOption(o =>
+          o.setName('session').setDescription('Target session name or id. Defaults to this channel\'s bound session.')
+           .setDescriptionLocalizations({ ko: '대상 세션 이름 또는 id. 생략 시 이 채널에 바인드된 세션을 사용합니다.' })
+           .setRequired(false).setMaxLength(80),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('list')
+        .setDescription('List cron jobs you can see (owner: all; others: own).')
+        .setDescriptionLocalizations({ ko: '볼 수 있는 cron 작업 목록 (오너: 전체; 그 외: 본인 것만).' })
+        .addStringOption(o =>
+          o.setName('session').setDescription('Filter by session name or id.')
+           .setDescriptionLocalizations({ ko: '세션 이름/id로 필터링.' })
+           .setRequired(false).setMaxLength(80),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('delete')
+        .setDescription('Delete a cron job by id (8-char prefix accepted).')
+        .setDescriptionLocalizations({ ko: 'id로 cron 작업 삭제 (8자리 prefix 허용).' })
+        .addStringOption(o =>
+          o.setName('id').setDescription('Job id or 8-char prefix.')
+           .setDescriptionLocalizations({ ko: '작업 id 또는 8자리 prefix.' })
+           .setRequired(true).setMaxLength(40),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('edit')
+        .setDescription('Toggle enabled state on a cron job.')
+        .setDescriptionLocalizations({ ko: 'cron 작업의 활성화 상태 변경.' })
+        .addStringOption(o =>
+          o.setName('id').setDescription('Job id or 8-char prefix.')
+           .setDescriptionLocalizations({ ko: '작업 id 또는 8자리 prefix.' })
+           .setRequired(true).setMaxLength(40),
+        )
+        .addBooleanOption(o =>
+          o.setName('enabled').setDescription('true = enable, false = disable.')
+           .setDescriptionLocalizations({ ko: 'true=활성화, false=비활성화.' })
+           .setRequired(false),
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('queue')
+    .setDescription('One-shot prompts that fire at a specific time.')
+    .setDescriptionLocalizations({ ko: '특정 시각에 한 번 발화되는 프롬프트.' })
+    .addSubcommand(s =>
+      s
+        .setName('add')
+        .setDescription('Queue a prompt to fire at a specific time (ISO 8601 / HH:mm / +Nh|m|d).')
+        .setDescriptionLocalizations({ ko: '특정 시각에 발화될 프롬프트 등록 (ISO 8601 / HH:mm / +Nh|m|d).' })
+        .addStringOption(o =>
+          o.setName('at').setDescription('When to fire. e.g. "+2h", "23:30", "2026-12-31T09:00:00".')
+           .setDescriptionLocalizations({ ko: '발화 시각 (예: "+2h", "23:30", "2026-12-31T09:00:00").' })
+           .setRequired(true).setMaxLength(60),
+        )
+        .addStringOption(o =>
+          o.setName('prompt').setDescription('Prompt body to send.')
+           .setDescriptionLocalizations({ ko: '전송할 프롬프트 내용.' })
+           .setRequired(true).setMaxLength(1800),
+        )
+        .addStringOption(o =>
+          o.setName('session').setDescription('Target session name or id. Defaults to this channel\'s session.')
+           .setDescriptionLocalizations({ ko: '대상 세션 이름/id. 생략 시 이 채널의 세션 사용.' })
+           .setRequired(false).setMaxLength(80),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('list')
+        .setDescription('List queued jobs.')
+        .setDescriptionLocalizations({ ko: '대기 중인 작업 목록.' })
+        .addStringOption(o =>
+          o.setName('session').setDescription('Filter by session name or id.')
+           .setDescriptionLocalizations({ ko: '세션 이름/id로 필터링.' })
+           .setRequired(false).setMaxLength(80),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('delete')
+        .setDescription('Delete a queued job by id.')
+        .setDescriptionLocalizations({ ko: 'id로 대기 중인 작업 삭제.' })
+        .addStringOption(o =>
+          o.setName('id').setDescription('Job id or 8-char prefix.')
+           .setDescriptionLocalizations({ ko: '작업 id 또는 8자리 prefix.' })
+           .setRequired(true).setMaxLength(40),
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('scheduler')
+    .setDescription('(Owner only) Manage the scheduler allowlist.')
+    .setDescriptionLocalizations({ ko: '(오너 전용) 스케줄러 allowlist 관리.' })
+    .addSubcommand(s =>
+      s
+        .setName('allow')
+        .setDescription('Add a user to the scheduler allowlist.')
+        .setDescriptionLocalizations({ ko: 'allowlist에 사용자 추가.' })
+        .addUserOption(o =>
+          o.setName('user').setDescription('Discord user to allow.')
+           .setDescriptionLocalizations({ ko: '허용할 사용자.' })
+           .setRequired(true),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('deny')
+        .setDescription('Remove a user from the scheduler allowlist.')
+        .setDescriptionLocalizations({ ko: 'allowlist에서 사용자 제거.' })
+        .addUserOption(o =>
+          o.setName('user').setDescription('Discord user to remove.')
+           .setDescriptionLocalizations({ ko: '제거할 사용자.' })
+           .setRequired(true),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('allowlist')
+        .setDescription('List current scheduler allowlist members.')
+        .setDescriptionLocalizations({ ko: '현재 allowlist 멤버 조회.' }),
+    )
+    .toJSON(),
 ]
 
 const rest = new REST({ version: '10' }).setToken(token)

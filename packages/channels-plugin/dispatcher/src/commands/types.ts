@@ -1,6 +1,20 @@
 import type { SessionStore, Session } from '../state/sessions.ts'
 import type { GuildConfigStore } from '../state/guild-config.ts'
 import type { VoiceService } from '../voice/voice-line.ts'
+import type { Scheduler } from '../scheduler/index.ts'
+import type { SchedulerAcl } from '../scheduler/acl.ts'
+import type { AllowlistEntry } from '../scheduler/store.ts'
+
+/**
+ * Narrow API the /scheduler allow|deny|allowlist handler needs from the
+ * dispatcher. The dispatcher wires this on top of `SchedulerStore` directly
+ * so the acl interface itself stays read-only.
+ */
+export type SchedulerAllowlistApi = {
+  add(userId: string, addedBy: string): void
+  remove(userId: string): boolean
+  list(): AllowlistEntry[]
+}
 
 /**
  * Dependencies that slash-command handlers need. The dispatcher's main
@@ -49,4 +63,12 @@ export type CommandContext = {
    * slash commands return a "voice unavailable" error in that case.
    */
   voice?: VoiceService
+  /**
+   * Scheduler subsystem (F1 — cron + queue). Undefined when scheduler init
+   * fails or is intentionally disabled. /cron, /queue, /scheduler handlers
+   * reject with "not initialized" if absent.
+   */
+  scheduler?: Scheduler
+  schedulerAcl?: SchedulerAcl
+  schedulerAllowlist?: SchedulerAllowlistApi
 }
