@@ -722,6 +722,26 @@ export async function handleCompact(
     return
   }
 
+  // Channels-mode sessions: dispatch claude's native /compact via tmux
+  // send-keys. Same session id, no fork, claude renders the compaction
+  // inline and the post-compact summary lands in the channel via the
+  // normal MCP `reply` tool. Fall through to compactSession() only when
+  // the tmux session is dead (channels child crashed).
+  if (target.transport === 'channels') {
+    const ok = ctx.nativeCompactForChannelsSession(target.id)
+    if (ok) {
+      await interaction.editReply(
+        `✅ Native \`/compact\` dispatched to **${target.name}**. ` +
+        `Watch this channel for claude's summary (no new session, same binding).`,
+      )
+      return
+    }
+    await interaction.editReply(
+      `⚠️ Channels session **${target.name}** is not running in tmux right now; ` +
+      `falling back to external fork+summarize.`,
+    )
+  }
+
   let lastEditAt = 0
   const onProgress = async (msg: string): Promise<void> => {
     // Throttle edits — Discord ratelimits editReply at ~5/5s per interaction.

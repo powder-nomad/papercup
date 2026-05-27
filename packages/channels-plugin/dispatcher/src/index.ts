@@ -17,7 +17,7 @@
  */
 
 import 'dotenv/config'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -38,7 +38,19 @@ import { defaultLocale, t } from './i18n.ts'
 import { createSchedulerStore } from './scheduler/store.ts'
 import { createScheduler } from './scheduler/index.ts'
 import { createAcl } from './scheduler/acl.ts'
-import type { SchedulerAllowlistApi } from './commands/types.ts'
+import { createLimitWatcher, DEFAULT_LIMIT_MODE, DEFAULT_NUDGE_TEXT, DEFAULT_GRACE_MS, type LimitWatcher } from './scheduler/limit-watcher.ts'
+import type { LimitConfig } from './scheduler/store.ts'
+import type { SchedulerAllowlistApi, SchedulerLimitApi } from './commands/types.ts'
+import { compactSession } from './compact.ts'
+import {
+  classifyUsage,
+  computeThresholds,
+  estimateTokensFromBytes,
+  loadPolicyFromEnv,
+  resolvePolicyMode,
+  usagePercent,
+  type CompactPolicyMode,
+} from './state/context-policy.ts'
 
 const log = makeLogger('dispatcher')
 
@@ -46,9 +58,10 @@ const log = makeLogger('dispatcher')
 // respawns via --resume. 30min mirrors DESIGN.md's default.
 const IDLE_TIMEOUT_MS = Number(process.env.PAPERCUP_IDLE_TIMEOUT_MS ?? 30 * 60_000)
 const REAPER_INTERVAL_MS = 60_000
-// Context-pressure warning thresholds. Posted at most once per (session, tier).
-const CONTEXT_WARN_TOKENS = Number(process.env.PAPERCUP_CONTEXT_WARN_TOKENS ?? 150_000)
-const CONTEXT_DANGER_TOKENS = Number(process.env.PAPERCUP_CONTEXT_DANGER_TOKENS ?? 180_000)
+// Context-pressure + auto-compact policy. Percentages of the model window
+// (200k / 1M) — see state/context-policy.ts for the defaults and env knobs.
+const COMPACT_POLICY_MODE: CompactPolicyMode = resolvePolicyMode()
+const COMPACT_POLICY_CONFIG = loadPolicyFromEnv()
 // Audio-frame heartbeat: a session whose voice line received audio inside this
 // window is treated as not-idle by the reaper.
 const VOICE_HEARTBEAT_MS = Number(process.env.PAPERCUP_VOICE_HEARTBEAT_MS ?? 60_000)
@@ -110,6 +123,8 @@ async function main(): Promise<void> {
   let scheduler: ReturnType<typeof createScheduler> | undefined
   let schedulerAcl: ReturnType<typeof createAcl> | undefined
   let schedulerAllowlist: SchedulerAllowlistApi | undefined
+  let schedulerLimit: SchedulerLimitApi | undefined
+  let limitWatcher: LimitWatcher | undefined
   try {
     schedulerStore.init()
     schedulerAcl = createAcl({ store: schedulerStore, ownerId: botOwnerId })
@@ -118,6 +133,35 @@ async function main(): Promise<void> {
         schedulerStore.addAllowlist({ userId, addedBy, addedAtEpochMs: Date.now() }),
       remove: userId => schedulerStore.removeAllowlist(userId),
       list: () => schedulerStore.listAllowlist(),
+    }
+    const resolveLimitConfig = (sessionId: string): LimitConfig => {
+      const row = schedulerStore.getLimitConfig(sessionId)
+      if (row) return row
+      return {
+        sessionId,
+        mode: DEFAULT_LIMIT_MODE,
+        nudgeText: DEFAULT_NUDGE_TEXT,
+        graceMs: DEFAULT_GRACE_MS,
+        updatedAtEpochMs: 0,
+      }
+    }
+    schedulerLimit = {
+      show: sessionId => resolveLimitConfig(sessionId),
+      setMode: (sessionId, mode) => {
+        const next: LimitConfig = { ...resolveLimitConfig(sessionId), mode, updatedAtEpochMs: Date.now() }
+        schedulerStore.upsertLimitConfig(next)
+        return next
+      },
+      setNudge: (sessionId, text) => {
+        const next: LimitConfig = { ...resolveLimitConfig(sessionId), nudgeText: text, updatedAtEpochMs: Date.now() }
+        schedulerStore.upsertLimitConfig(next)
+        return next
+      },
+      setGraceMs: (sessionId, graceMs) => {
+        const next: LimitConfig = { ...resolveLimitConfig(sessionId), graceMs, updatedAtEpochMs: Date.now() }
+        schedulerStore.upsertLimitConfig(next)
+        return next
+      },
     }
     log.info(
       `scheduler store initialized: ${join(papercupHome, 'scheduler.db')}, owner=${botOwnerId || '(none)'}`,
@@ -187,6 +231,11 @@ async function main(): Promise<void> {
   // Track which warning tier we've already posted per session this turn-stream.
   // Cleared when the agent exits (session might be reaped and restarted fresh).
   const contextWarnTier = new Map<string, 'warn' | 'danger'>()
+  // Auto-compact dedupe: while a compact is in flight (async) for a session,
+  // no further turn-complete events should retrigger it. Cleared either when
+  // compact resolves (success or fail) OR when the channel re-binds to the
+  // forked session.
+  const autoCompactInFlight = new Set<string>()
 
   function spawnFor(session: Session): void {
     const transport = transportFor(session)
@@ -246,6 +295,17 @@ async function main(): Promise<void> {
         if (!s) return false
         return transportFor(s).isAlive(id)
       },
+    })
+    // `discord` is declared later in this function but `notify` is only invoked
+    // when a reply arrives — by then DiscordChannelClient is constructed and
+    // started. Mirrors the same forward-reference used by onTurnComplete.
+    limitWatcher = createLimitWatcher({
+      scheduler,
+      store: schedulerStore,
+      sessions,
+      log: log.child('limit-watcher'),
+      botOwnerId,
+      notify: (channelId, text) => { void discord.postNotice(channelId, text) },
     })
   }
 
@@ -347,29 +407,143 @@ async function main(): Promise<void> {
     })()
   }
 
-  const onTurnComplete = (e: TurnCompleteEvent): void => {
-    const channelId = sessions.findById(e.sessionId)?.channelId
-    if (!channelId) return
-    const kTokens = (e.usage.inputTokens / 1000).toFixed(0)
-    if (e.usage.inputTokens >= CONTEXT_DANGER_TOKENS && contextWarnTier.get(e.sessionId) !== 'danger') {
-      contextWarnTier.set(e.sessionId, 'danger')
-      void discord.postNotice(
-        channelId,
-        t(defaultLocale(), 'notice.contextDanger', { kTokens }),
-      )
-    } else if (e.usage.inputTokens >= CONTEXT_WARN_TOKENS && !contextWarnTier.has(e.sessionId)) {
-      contextWarnTier.set(e.sessionId, 'warn')
-      void discord.postNotice(
-        channelId,
-        t(defaultLocale(), 'notice.contextWarn', { kTokens }),
-      )
+  /**
+   * Core evaluator shared by the per-turn event (`onTurnComplete`) and the
+   * periodic transcript scanner. Classifies usage, posts deduped warn/danger
+   * notices, and (when policy=auto) kicks off auto-compact for sessions past
+   * the auto-compact threshold.
+   *
+   * `source` is just a log tag — "turn" for stream-json events, "scan" for
+   * periodic transcript-byte estimates. Channels-mode sessions always come
+   * through "scan" because their long-lived child doesn't emit usage events.
+   */
+  function evaluateContextPressure(
+    session: Session,
+    inputTokens: number,
+    source: 'turn' | 'scan',
+  ): void {
+    if (!session.channelId) return
+    const channelId = session.channelId
+    const thresholds = computeThresholds(session.model, COMPACT_POLICY_CONFIG)
+    const tier = classifyUsage(inputTokens, thresholds)
+    if (tier === 'safe') return
+    const fmt = {
+      pct: String(usagePercent(inputTokens, thresholds)),
+      kTokens: (inputTokens / 1000).toFixed(0),
+      kWindow: (thresholds.windowTokens / 1000).toFixed(0),
+      autoPct: String(COMPACT_POLICY_CONFIG.autoCompactPct),
     }
+    if (tier === 'auto-compact') {
+      if (contextWarnTier.get(session.id) !== 'danger') {
+        contextWarnTier.set(session.id, 'danger')
+        void discord.postNotice(channelId, t(defaultLocale(), 'notice.contextDanger', fmt))
+      }
+      if (COMPACT_POLICY_MODE === 'auto') {
+        log.info(`auto-compact trigger (source=${source}, session=${session.name}, pct=${fmt.pct})`)
+        triggerAutoCompact(session, channelId, fmt.pct).catch(err =>
+          log.error(`auto-compact wrapper threw for ${session.id}:`, err),
+        )
+      }
+      return
+    }
+    if (tier === 'danger' && contextWarnTier.get(session.id) !== 'danger') {
+      contextWarnTier.set(session.id, 'danger')
+      void discord.postNotice(channelId, t(defaultLocale(), 'notice.contextDanger', fmt))
+      return
+    }
+    if (tier === 'warn' && !contextWarnTier.has(session.id)) {
+      contextWarnTier.set(session.id, 'warn')
+      void discord.postNotice(channelId, t(defaultLocale(), 'notice.contextWarn', fmt))
+    }
+  }
+
+  const onTurnComplete = (e: TurnCompleteEvent): void => {
+    const session = sessions.findById(e.sessionId)
+    if (!session) return
+    evaluateContextPressure(session, e.usage.inputTokens, 'turn')
+  }
+
+  /**
+   * Fire-and-forget auto-compact. Dedup'd by sessionId. Channels-mode
+   * sessions use claude's native `/compact` slash command via tmux
+   * send-keys — same session id, no fork, claude renders the compaction
+   * inline. Per-turn sessions fall back to compactSession() (external
+   * fork+summarize) because they spawn with slash commands disabled for
+   * token economy. Failures are loud — the user must know if auto-compact
+   * ditched mid-way so they can /compact manually.
+   */
+  async function triggerAutoCompact(
+    session: Session,
+    channelId: string,
+    pct: string,
+  ): Promise<void> {
+    if (autoCompactInFlight.has(session.id)) return
+    autoCompactInFlight.add(session.id)
+    try {
+      if (session.transport === 'channels') {
+        await discord.postNotice(
+          channelId,
+          t(defaultLocale(), 'notice.autoCompactStartNative', { name: session.name, pct }),
+        )
+        const ok = channelsTransport.sendNativeCompact(session.id)
+        if (!ok) {
+          // tmux session is dead — fall back to external fork+summarize.
+          log.warn(`native /compact unavailable for ${session.id}; falling back to compactSession`)
+          await runFallbackCompact(session, channelId)
+        } else {
+          // Native compact runs in-session; reset our warn-tier dedupe so the
+          // next-turn evaluator can re-arm. claude itself will emit the
+          // post-compaction summary via the MCP `reply` tool.
+          contextWarnTier.delete(session.id)
+          log.info(`auto-compact (native): /compact dispatched to ${session.name}`)
+        }
+      } else {
+        await discord.postNotice(
+          channelId,
+          t(defaultLocale(), 'notice.autoCompactStart', { name: session.name, pct }),
+        )
+        await runFallbackCompact(session, channelId)
+      }
+    } catch (err) {
+      log.error(`auto-compact failed for ${session.id} (${session.name}):`, err)
+      await discord
+        .postNotice(
+          channelId,
+          t(defaultLocale(), 'notice.autoCompactFailed', { error: (err as Error).message }),
+        )
+        .catch(postErr => log.warn('postNotice for autoCompactFailed threw:', postErr))
+    } finally {
+      autoCompactInFlight.delete(session.id)
+    }
+  }
+
+  async function runFallbackCompact(session: Session, channelId: string): Promise<void> {
+    const result = await compactSession(session, {
+      sessions,
+      papercupHome,
+      projectDir,
+      killFor,
+    })
+    contextWarnTier.delete(session.id)
+    contextWarnTier.delete(result.newSession.id)
+    await discord.postNotice(
+      channelId,
+      t(defaultLocale(), 'notice.autoCompactDone', {
+        newName: result.newSession.name,
+        turns: String(result.turns),
+      }),
+    )
+    log.info(
+      `auto-compact (fallback) ok: ${session.name} → ${result.newSession.name} ` +
+      `(${result.turns} turns, ${result.digestChars}c digest → ${result.summaryChars}c summary)`,
+    )
   }
 
   for (const t of transports.all()) {
     t.on('reply', onReply)
     t.on('permissionRequest', onPermissionRequest)
     t.on('turnComplete', onTurnComplete)
+    if (limitWatcher) t.on('reply', e => limitWatcher!.handleReply(e))
   }
 
   function resolvePermission(
@@ -404,10 +578,16 @@ async function main(): Promise<void> {
     },
     resolvePermission,
     channelsAvailable: () => channelsTransport.isAvailable(),
+    nativeCompactForChannelsSession: id => {
+      const s = sessions.findById(id)
+      if (!s || s.transport !== 'channels') return false
+      return channelsTransport.sendNativeCompact(id)
+    },
     voice,
     scheduler,
     schedulerAcl,
     schedulerAllowlist,
+    schedulerLimit,
   }
 
   const discord = new DiscordChannelClient({
@@ -434,6 +614,46 @@ async function main(): Promise<void> {
       try { spawnFor(s) } catch (err) { log.warn(`boot respawn failed for ${s.id}:`, err) }
     }
   }
+
+  // Periodic context-pressure scanner. The channels transport's claude child
+  // doesn't emit stream-json `usage` events (see claude-children.ts:46-52),
+  // so `onTurnComplete` is dead for channels sessions — the only way to track
+  // their size is to stat the transcript file. Per-turn sessions get this
+  // as a between-turn safety net.
+  //
+  // Default cadence: 5 min. Runs once at boot too, so channels sessions that
+  // were already heavy when the dispatcher started get caught before the
+  // user types anything. Auto-compact (when policy=auto) fires inside the
+  // shared evaluator with the existing dedupe set.
+  const CONTEXT_SCAN_INTERVAL_MS = Number(process.env.PAPERCUP_CONTEXT_SCAN_MS ?? 5 * 60_000)
+
+  function scanOneSessionTranscript(s: Session): void {
+    if (!s.channelId) return
+    const tpath = join(homedir(), '.claude', 'projects', CLAUDE_PROJECT_DIR_NAME, `${s.id}.jsonl`)
+    let bytes = 0
+    try { bytes = statSync(tpath).size } catch { return }
+    const estTokens = estimateTokensFromBytes(bytes)
+    evaluateContextPressure(s, estTokens, 'scan')
+  }
+
+  function scanAllSessions(): void {
+    for (const s of sessions.list()) {
+      try { scanOneSessionTranscript(s) } catch (err) {
+        log.warn(`context scan failed for ${s.id}:`, err)
+      }
+    }
+  }
+
+  // Boot scan: catch sessions that grew past the threshold while the
+  // dispatcher was down. Runs after Discord is online so postNotice works.
+  scanAllSessions()
+
+  const contextScanTimer = setInterval(scanAllSessions, CONTEXT_SCAN_INTERVAL_MS)
+  contextScanTimer.unref()
+  log.info(
+    `context scanner: interval=${CONTEXT_SCAN_INTERVAL_MS}ms, policy=${COMPACT_POLICY_MODE}, ` +
+    `pcts=warn${COMPACT_POLICY_CONFIG.warnPct}/danger${COMPACT_POLICY_CONFIG.dangerPct}/auto${COMPACT_POLICY_CONFIG.autoCompactPct}`,
+  )
 
   /**
    * Voice utterance → transport event. Voice and text share the same session,

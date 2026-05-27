@@ -366,12 +366,36 @@ const messages = {
 
   // channel-public notices -------------------------------------------------
   'notice.contextWarn': {
-    en: '⚠️ **Context getting heavy** — {kTokens}k input tokens used. Consider /compact if responses slow down.',
-    ko: '⚠️ **컨텍스트가 무거워지고 있습니다** — 입력 토큰 {kTokens}k 사용 중. 응답이 느려진다면 /compact를 고려하세요.',
+    en: '⚠️ **Context getting heavy** — {pct}% ({kTokens}k / {kWindow}k input tokens). Auto-compact at {autoPct}%. Run /compact to fork early.',
+    ko: '⚠️ **컨텍스트가 무거워지고 있습니다** — {pct}% ({kTokens}k / {kWindow}k 입력 토큰). {autoPct}%에서 자동 compact. 미리 분기하려면 /compact를 실행하세요.',
   },
   'notice.contextDanger': {
-    en: '🛑 **Context danger zone** — {kTokens}k input tokens used. Compact or start a fresh session soon.',
-    ko: '🛑 **컨텍스트 위험 구간** — 입력 토큰 {kTokens}k 사용 중. 곧 compact하거나 새 세션을 시작하세요.',
+    en: '🛑 **Context danger zone** — {pct}% ({kTokens}k / {kWindow}k input tokens). Auto-compact fires at {autoPct}%.',
+    ko: '🛑 **컨텍스트 위험 구간** — {pct}% ({kTokens}k / {kWindow}k 입력 토큰). {autoPct}%에서 자동 compact가 실행됩니다.',
+  },
+  'notice.autoCompactStart': {
+    en: '🤖 **Auto-compact triggered** — {pct}% context full. Forking **{name}** → new session, this may take ~30s.',
+    ko: '🤖 **자동 compact 실행** — 컨텍스트 {pct}% 사용. **{name}**을(를) 새 세션으로 분기 중, ~30초 소요.',
+  },
+  'notice.autoCompactStartNative': {
+    en: '🤖 **Auto-compact triggered** — {pct}% context full. Running native `/compact` in **{name}** (no new session).',
+    ko: '🤖 **자동 compact 실행** — 컨텍스트 {pct}% 사용. **{name}**에서 native `/compact` 실행 중 (새 세션 없음).',
+  },
+  'notice.autoCompactDone': {
+    en: '✅ **Auto-compact complete** — this channel now routes to **{newName}** ({turns} turns summarized).',
+    ko: '✅ **자동 compact 완료** — 이 채널은 이제 **{newName}**(으)로 연결됩니다 ({turns} 턴 요약).',
+  },
+  'notice.autoCompactNativeDispatched': {
+    en: '✅ **Native /compact dispatched** to **{name}**. Watch the channel for claude\'s summary.',
+    ko: '✅ **Native /compact 전달 완료** — **{name}**. 채널에서 claude의 요약을 확인하세요.',
+  },
+  'notice.autoCompactFailed': {
+    en: '❌ **Auto-compact failed** — {error}. Try /compact manually.',
+    ko: '❌ **자동 compact 실패** — {error}. 수동으로 /compact를 실행해 주세요.',
+  },
+  'notice.startupCompactRecommended': {
+    en: '🤖 **Startup check** — session **{name}** transcript is large (~{kTokens}k tokens estimated). Auto-compacting before next turn.',
+    ko: '🤖 **시작 점검** — 세션 **{name}**의 대화 기록이 큽니다 (~{kTokens}k 토큰 추정). 다음 턴 전 자동 compact 실행.',
   },
   'notice.voiceTranscript': {
     en: '🎙️ {text}',

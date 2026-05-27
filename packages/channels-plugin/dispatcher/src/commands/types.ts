@@ -72,6 +72,14 @@ export type CommandContext = {
    */
   channelsAvailable: () => boolean
   /**
+   * Channels-mode shortcut: dispatch claude's native `/compact` slash command
+   * into the live tmux session. Returns true when the keystrokes landed,
+   * false when the tmux session is dead — caller should fall back to the
+   * external compactSession() path. Always returns false for per-turn
+   * sessions (their backend spawns with --disable-slash-commands).
+   */
+  nativeCompactForChannelsSession: (sessionId: string) => boolean
+  /**
    * Voice subsystem. Undefined if the Whisper sidecar failed to boot — voice
    * slash commands return a "voice unavailable" error in that case.
    */

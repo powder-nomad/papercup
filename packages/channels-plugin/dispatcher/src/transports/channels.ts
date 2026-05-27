@@ -237,6 +237,18 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
     return this.uds.isConnected(sessionId)
   }
 
+  /**
+   * Send claude's native `/compact` slash command into the live tmux session.
+   * Channels-mode only; per-turn sessions disable slash commands and must
+   * use the external compactSession() fallback.
+   *
+   * Returns true on successful keystroke delivery, false when the underlying
+   * tmux session is dead (caller should fall back).
+   */
+  sendNativeCompact(sessionId: string): boolean {
+    return this.claude.sendNativeCompact(sessionId)
+  }
+
   async shutdown(): Promise<void> {
     this.claude.killAll()
     try {

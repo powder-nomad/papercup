@@ -253,6 +253,114 @@ the catch-up variant (`DESIGN-scheduler.md` §DST option B).
   dispatcher restart can produce a burst of fires for stale jobs. Disable
   noisy jobs before a long-planned restart if that matters.
 
+### Limit auto-resume — `/limit-handler` (F2)
+
+When a backend (currently claude-code) emits a usage-limit reply, the
+dispatcher's limit-watcher parses the reset instant and schedules a one-shot
+nudge job at `reset + graceMs` via the same queue path as `/queue add`. The
+matched reply must carry a unix-seconds timestamp; partial matches (phrase
+without an int) are deliberately ignored to avoid false positives.
+
+| Subcommand | Purpose |
+| --- | --- |
+| `/limit-handler show` | Inspect effective config for a session. Falls back to defaults when nothing is stored. |
+| `/limit-handler mode mode:<auto-nudge\|ask-user\|off>` | Set behaviour. `ask-user` is accepted but deferred — the watcher treats it as `off` until the DM-interaction epic ships. |
+| `/limit-handler set-nudge text:"…"` | Override the prompt sent after the reset window. |
+| `/limit-handler set-grace seconds:<int>` | Extra seconds to wait after the reset before firing the nudge. |
+
+Defaults when no row exists:
+
+| Field | Default |
+| --- | --- |
+| `mode` | `auto-nudge` |
+| `nudgeText` | `Resume where you left off.` |
+| `graceMs` | `30_000` |
+
+Owner alerts (limit hit, nudge scheduled) post into the **bound guild
+channel** for the affected session. DM-based alerts are out of scope for F2
+and tracked in the DM-interaction epic.
+
+Matcher coverage today is **claude-code only**. The regex requires both the
+gating phrase (`usage limit reached`) and a parseable unix-seconds integer
+separated by `|` or `:` — anything else returns no match. Gemini and Codex
+matchers are not yet implemented; sessions on those backends never trigger
+an auto-resume. Update fixtures in
+`dispatcher/test/scheduler.limit-watcher.test.ts` if a future claude version
+changes its reply wording.
+
+### Context auto-compact (F4)
+
+Long-running channel-mode sessions silently accumulate context until the
+underlying claude child errors out — there's no per-turn `usage` event from
+the long-lived child to drive a warning. F4 closes that gap with a periodic
+transcript-size scanner plus a policy-driven auto-compact.
+
+**How it works**
+
+- Every `PAPERCUP_CONTEXT_SCAN_MS` (default 5 min), the dispatcher stats each
+  bound session's transcript at `~/.claude/projects/-tmp/<id>.jsonl` and
+  estimates token count from byte size (`bytes / 4`, conservative).
+- Estimated tokens are classified against the model's context window:
+  warn / danger / auto-compact tiers as percentages of the window.
+- Window is detected from `session.model` — 1M when the model name carries
+  `[1m]` / `-1m` / `_1m` or matches `sonnet-4*`; otherwise 200k.
+- Per-turn sessions also fire the same evaluator on every `usage` event;
+  channels-mode sessions rely on the periodic scan only (their long-lived
+  child doesn't emit stream-json `result` events).
+
+**Tiers**
+
+| Tier | Default | Action |
+| --- | --- | --- |
+| warn | 70% | Discord notice with current %, used / window tokens, auto-compact %. |
+| danger | 85% | Louder notice. |
+| auto-compact | 92% | If policy=auto, fork-and-summarize fires automatically; channel rebinds to the new session. |
+
+The "summarize at resume" picker (`Resume from summary` / `Resume full
+session as-is`) is **already handled** by `claude-children.ts` — the
+bootstrap-dialog poller auto-presses `1` to pick the summary resume. That's
+claude's NATIVE auto-compact-at-startup; F4's auto-compact is the safety net
+for cases where the picker doesn't appear (e.g. context grew during the
+session, not at resume).
+
+**Env vars**
+
+| Var | Default | Effect |
+| --- | --- | --- |
+| `PAPERCUP_COMPACT_POLICY` | `auto` | `auto` / `warn-only` / `off`. |
+| `PAPERCUP_CONTEXT_WARN_PCT` | `70` | Warn threshold as percent of window. |
+| `PAPERCUP_CONTEXT_DANGER_PCT` | `85` | Danger threshold. |
+| `PAPERCUP_AUTOCOMPACT_PCT` | `92` | Auto-compact threshold. |
+| `PAPERCUP_CONTEXT_SCAN_MS` | `300000` | Periodic scanner cadence. |
+| `PAPERCUP_CONTEXT_WARN_TOKENS` | _(unset)_ | Optional absolute floor for warn (lower-of-two wins). |
+| `PAPERCUP_CONTEXT_DANGER_TOKENS` | _(unset)_ | Optional absolute floor for danger. |
+
+Setting the legacy `_TOKENS` floors only makes sense when you want an early
+warning regardless of model — e.g. a 1M-window session with
+`PAPERCUP_CONTEXT_WARN_TOKENS=150000` warns at 15% instead of 70%. Per-turn
+auto-compact has no absolute floor; it always uses the percent.
+
+**`/compact` (manual) — native vs fallback**
+
+For channels-mode sessions, `/compact` now dispatches claude's **native**
+`/compact` slash command into the live tmux pane via `tmux send-keys`. Same
+session id, no fork, no external `claude -p` summarizer spawn. Claude
+renders the compaction inline and the post-compact summary lands in the
+channel via the normal MCP `reply` tool.
+
+If the tmux session is dead (channels child crashed, never spawned), the
+handler falls back to the external `compactSession()` (fork + summarize +
+rebind channel).
+
+Per-turn sessions always use the external fallback — they spawn with
+`--disable-slash-commands` for token economy, so claude can't process a
+literal `/compact` from a channel event.
+
+The auto-compact trigger uses the same branching: channels sessions get
+native `/compact`, per-turn sessions get `compactSession()`. The Discord
+notice tells you which path fired (`Running native /compact` vs `Forking →
+new session`).
+
 ## Voice — env vars
 
 These tune the voice subsystem (defaults in parentheses):

@@ -248,6 +248,51 @@ export class ClaudeChildManager {
   }
 
   /**
+   * Send claude's own `/compact` slash command into the running session's
+   * tmux pane. Channels-mode only — per-turn sessions spawn with
+   * `--disable-slash-commands` for token-economy and need the external
+   * compactSession() fallback.
+   *
+   * Returns true if the tmux session is alive and the keystrokes were
+   * delivered. False means the session is dead and the caller should fall
+   * back to compactSession().
+   *
+   * UX: claude renders the compaction inline in its TUI and replaces the
+   * conversation prefix with a summary. The MCP `reply` tool fires for the
+   * "compaction complete" turn just like any other, so Discord sees the
+   * summary land as a normal reply. No new session id; the binding stays.
+   *
+   * `Ctrl+U` is sent first to clear any half-typed prompt sitting on the
+   * input line — without it, a partial draft would prefix the `/compact`
+   * string and claude would treat the whole thing as a regular user message.
+   */
+  sendNativeCompact(sessionId: string): boolean {
+    const t = this.tracked.get(sessionId)
+    if (!t) {
+      this.log.warn(`sendNativeCompact: no tracked tmux session for ${sessionId}`)
+      return false
+    }
+    const has = spawnSync('tmux', ['has-session', '-t', t.sessionName], { stdio: 'ignore' })
+    if (has.status !== 0) {
+      this.tracked.delete(sessionId)
+      this.log.warn(`sendNativeCompact: tmux session ${t.sessionName} disappeared`)
+      return false
+    }
+    spawnSync('tmux', ['send-keys', '-t', t.sessionName, 'C-u'], { timeout: 2000 })
+    const r = spawnSync('tmux', ['send-keys', '-t', t.sessionName, '/compact', 'Enter'], {
+      timeout: 2000,
+    })
+    if (r.status !== 0) {
+      this.log.error(
+        `sendNativeCompact: tmux send-keys failed for ${t.sessionName} (status=${r.status})`,
+      )
+      return false
+    }
+    this.log.info(`sendNativeCompact: /compact dispatched to ${t.sessionName}`)
+    return true
+  }
+
+  /**
    * Detects known interactive bootstrap dialogs that claude shows BEFORE it
    * boots the MCP plugin (trust workspace, dev-channels warning, …) and
    * answers each with `1` + Enter. Polls every 500ms for up to TRUST_POLL_MS
