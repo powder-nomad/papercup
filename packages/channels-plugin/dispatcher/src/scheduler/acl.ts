@@ -26,12 +26,38 @@ export interface SchedulerAcl {
    * - Owner: yes, for any job.
    * - Allowlisted actor: yes iff actorId === jobOwnerId.
    * - Otherwise: no.
-   * Pass `jobOwnerId = null` for creation checks (no owner yet).
+   * Pass `jobOwnerId = null` for creation checks (no existing owner yet — an
+   * allowlisted actor is creating it under their own ID).
    */
   canManage(actorId: string, jobOwnerId: string | null): boolean
 }
 
-export function createAcl(_deps: AclDeps): SchedulerAcl {
-  // TODO(task #5): straightforward predicate impl on top of store.isAllowlisted.
-  throw new Error('createAcl: not implemented yet — see task #5')
+class AclImpl implements SchedulerAcl {
+  constructor(
+    private readonly store: SchedulerStore,
+    private readonly ownerId: string,
+  ) {}
+
+  isOwner(userId: string): boolean {
+    if (!this.ownerId) return false
+    return userId === this.ownerId
+  }
+
+  isAllowlisted(userId: string): boolean {
+    if (!userId) return false
+    return this.store.isAllowlisted(userId)
+  }
+
+  canManage(actorId: string, jobOwnerId: string | null): boolean {
+    if (!actorId) return false
+    if (this.isOwner(actorId)) return true
+    if (!this.isAllowlisted(actorId)) return false
+    // Allowlisted users can only touch their own jobs. For creation
+    // (jobOwnerId === null) the caller implicitly becomes the owner.
+    return jobOwnerId === null || jobOwnerId === actorId
+  }
+}
+
+export function createAcl(deps: AclDeps): SchedulerAcl {
+  return new AclImpl(deps.store, deps.ownerId)
 }
