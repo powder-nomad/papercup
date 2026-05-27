@@ -39,6 +39,16 @@ export type RespondOptions = {
    * support streaming ignore this and just produce the final AgentReply.
    */
   onEvent?: (event: TurnEvent) => void;
+  /**
+   * Absolute path to a per-turn outbox directory. Anything the agent writes
+   * here gets attached to the Discord reply (see PerTurnTransport). Backends
+   * with workspace sandboxing should widen the workspace to include this
+   * directory (e.g. gemini-cli passes `--include-directories <outboxDir>`),
+   * since the path lives outside the agent's normal project dir. Backends
+   * without write sandboxing can ignore — the prompt already mentions the
+   * path and the agent uses its normal write tool.
+   */
+  outboxDir?: string;
 };
 
 export type AgentBackendOpts = {

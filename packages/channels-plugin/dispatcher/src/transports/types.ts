@@ -77,6 +77,15 @@ export type ReplyEvent = {
   text: string
   /** Optional Discord message id to reply-to (used for permission verdict pings). */
   replyTo?: string
+  /** Absolute paths to files the agent wants attached to the Discord reply.
+   *  Channels: set by claude via the MCP `reply` tool's `files` arg.
+   *  Per-turn: populated by scanOutbox() of $PAPERCUP_OUTBOX_DIR after the
+   *  child exits. Capped + validated by DiscordSender.sendReply. */
+  files?: string[]
+  /** Per-turn outbox directory to delete once Discord upload succeeds. Only
+   *  set by the per-turn transport; channels passes paths directly and
+   *  manages their lifetime itself. */
+  outboxDir?: string
 }
 
 /** Permission prompt forwarded from claude → UI button. Only used by

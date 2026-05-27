@@ -17,12 +17,18 @@ import {
   type Message,
   type Attachment,
 } from 'discord.js'
-import { mkdir, writeFile } from 'node:fs/promises'
-import { extname, join } from 'node:path'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
+import { basename, extname, isAbsolute, join } from 'node:path'
 import { makeLogger, type Logger } from './log.ts'
 import type { GuildConfigStore } from './state/guild-config.ts'
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+/** Discord allows up to 10 attachments per message. */
+const MAX_REPLY_FILES = 10
+/** Per-file cap when posting back — 24 MB leaves headroom under the 25 MB
+ *  non-boost server limit (boosted servers go higher but we don't probe). */
+const MAX_REPLY_FILE_BYTES = 24 * 1024 * 1024
 
 export type AttachmentRef = {
   name: string
@@ -95,12 +101,23 @@ export class DiscordChannelClient {
    * Send a Discord message. Outbound channel-allowlist enforcement is in the
    * dispatcher's reply handler (it checks that `chat_id` matches the session's
    * stored channelId), so this method only does the send + chunk.
+   *
+   * `files` (absolute paths) are validated, oversized/missing entries are
+   * skipped with a warning, and the surviving files are attached to the FIRST
+   * Discord chunk only. Throws on transport failure as before — caller decides
+   * whether to retry or cleanup the outbox.
    */
-  async sendReply(chatId: string, text: string, replyTo?: string): Promise<string[]> {
+  async sendReply(
+    chatId: string,
+    text: string,
+    replyTo?: string,
+    files?: string[],
+  ): Promise<string[]> {
     const ch = await this.client.channels.fetch(chatId)
     if (!ch || !ch.isTextBased() || !('send' in ch)) {
       throw new Error(`channel ${chatId} not found or not sendable`)
     }
+    const validFiles = await this.validateReplyFiles(files)
     const chunks = chunkText(text, 2000)
     const ids: string[] = []
     for (let i = 0; i < chunks.length; i++) {
@@ -109,10 +126,45 @@ export class DiscordChannelClient {
         ...(i === 0 && replyTo
           ? { reply: { messageReference: replyTo, failIfNotExists: false } }
           : {}),
+        ...(i === 0 && validFiles.length > 0 ? { files: validFiles } : {}),
       })
       ids.push(sent.id)
     }
     return ids
+  }
+
+  /** Stat each path, drop missing or oversized files with a warning, cap at
+   *  Discord's 10-attachment limit. Non-absolute paths are rejected (callers
+   *  should never produce them, but defensive against a misbehaving plugin). */
+  private async validateReplyFiles(files?: string[]): Promise<{ attachment: string; name: string }[]> {
+    if (!files || files.length === 0) return []
+    const out: { attachment: string; name: string }[] = []
+    for (const p of files) {
+      if (out.length >= MAX_REPLY_FILES) {
+        this.log.warn(`reply files truncated: more than ${MAX_REPLY_FILES} requested, skipping rest`)
+        break
+      }
+      if (!isAbsolute(p)) {
+        this.log.warn(`reply file rejected (not absolute): ${p}`)
+        continue
+      }
+      try {
+        const st = await stat(p)
+        if (!st.isFile()) {
+          this.log.warn(`reply file rejected (not a regular file): ${p}`)
+          continue
+        }
+        if (st.size > MAX_REPLY_FILE_BYTES) {
+          this.log.warn(`reply file rejected (${st.size} > ${MAX_REPLY_FILE_BYTES}): ${p}`)
+          continue
+        }
+      } catch (err) {
+        this.log.warn(`reply file rejected (stat failed): ${p} — ${(err as Error).message}`)
+        continue
+      }
+      out.push({ attachment: p, name: basename(p) })
+    }
+    return out
   }
 
   /**

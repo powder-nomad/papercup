@@ -22,6 +22,9 @@ export type PluginReply = {
   chat_id: string
   text: string
   reply_to?: string
+  /** Absolute file paths to attach to the Discord reply. Validated and capped
+   *  in DiscordSender.sendReply (≤10 files, ≤24 MB each). */
+  files?: string[]
 }
 
 export type PluginLog = {

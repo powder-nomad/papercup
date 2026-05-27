@@ -18,6 +18,7 @@
 
 import 'dotenv/config'
 import { existsSync, mkdirSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -234,11 +235,20 @@ async function main(): Promise<void> {
         return
       }
       try {
-        const ids = await discord.sendReply(e.channelId, e.text, e.replyTo)
+        const ids = await discord.sendReply(e.channelId, e.text, e.replyTo, e.files)
         log.info(
-          `reply sent: session=${e.sessionId}, msgId=${e.msgId}, transport=${session.transport}, discord_ids=${ids.join(',')}`,
+          `reply sent: session=${e.sessionId}, msgId=${e.msgId}, transport=${session.transport}, discord_ids=${ids.join(',')}${e.files?.length ? `, files=${e.files.length}` : ''}`,
         )
         void sessions.touch(e.sessionId)
+        // Cleanup the per-turn outbox only after Discord acknowledged the
+        // upload — on failure we leave the dir so the user can inspect or
+        // resend. Channels-mode replies never set outboxDir (claude passes
+        // paths from arbitrary locations and owns their lifetime).
+        if (e.outboxDir) {
+          rm(e.outboxDir, { recursive: true, force: true }).catch(err =>
+            log.warn(`outbox cleanup failed (${e.outboxDir}):`, err),
+          )
+        }
       } catch (err) {
         log.error(`reply failed (session=${e.sessionId}, msgId=${e.msgId}):`, err)
       } finally {

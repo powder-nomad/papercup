@@ -23,7 +23,7 @@ import { runWithResumeRecovery } from "./_recovery.ts";
  *     a follow-up that mirrors what claude-code does.
  */
 export class GeminiCliBackend extends BaseCliBackend {
-  async respond(userText: string, _respondOpts: RespondOptions = {}): Promise<AgentReply> {
+  async respond(userText: string, respondOpts: RespondOptions = {}): Promise<AgentReply> {
     if (!this.sessionId) throw new Error("GeminiCliBackend: start() not called");
 
     const binary = process.env.GEMINI_BINARY ?? "gemini";
@@ -37,6 +37,11 @@ export class GeminiCliBackend extends BaseCliBackend {
       "-p", userText,
       "--output-format", "json",
       ...(model ? ["-m", model] : []),
+      // Widen the workspace sandbox so write_file accepts paths in the
+      // per-turn outbox directory. Without this, gemini rejects writes
+      // outside its cwd + ~/.gemini/tmp/<project>/ and the outbox stays
+      // empty even though the prompt told the agent to use it.
+      ...(respondOpts.outboxDir ? ["--include-directories", respondOpts.outboxDir] : []),
       ...extra,
     ];
 

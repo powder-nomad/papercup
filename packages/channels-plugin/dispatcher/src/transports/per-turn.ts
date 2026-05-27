@@ -22,6 +22,8 @@
  */
 
 import { EventEmitter } from 'node:events'
+import { mkdir, readdir, rm, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { makeLogger, type Logger } from '../log.ts'
 import type {
   SessionTransport,
@@ -56,10 +58,15 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
   readonly name: TransportName = 'per-turn'
   private states = new Map<string, PerSessionState>()
   private log: Logger
+  /** `<papercupHome>/outbox/<channelId>/<turnId>/` — per-turn drop folder.
+   *  Agent writes files here with its native tools; we scan after the backend
+   *  exits and ship whatever survives the Discord size/count caps. */
+  private outboxRoot: string
 
-  constructor(_init: TransportInit) {
+  constructor(init: TransportInit) {
     super()
     this.log = makeLogger('transport:per-turn')
+    this.outboxRoot = join(init.papercupHome, 'outbox')
   }
 
   bindChannel(sessionId: string, channelId: string): void {
@@ -234,19 +241,45 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
           break
         }
 
+        // Per-turn outbox: agent gets an absolute path it can Write to with its
+        // native tools. After the backend exits we scan and attach. Dispatcher
+        // rm's the dir once Discord acknowledges the upload.
+        const turnId =
+          events[events.length - 1]?.messageId ??
+          `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const outboxDir = join(this.outboxRoot, channelId, turnId)
+        await mkdir(outboxDir, { recursive: true })
+        const promptWithOutbox = appendOutboxHint(prompt, outboxDir)
+
         this.log.info(
-          `respond start: session=${sessionId} backend=${s.backendName} prompt_len=${prompt.length}`,
+          `respond start: session=${sessionId} backend=${s.backendName} prompt_len=${promptWithOutbox.length} outbox=${outboxDir}`,
         )
         try {
-          const reply = await backend.respond(prompt)
+          const reply = await backend.respond(promptWithOutbox, { outboxDir })
           if (s.cfg) s.cfg = { ...s.cfg, resume: true }
+
+          const files = await scanOutbox(outboxDir, this.log)
+          const baseEmit = {
+            sessionId,
+            channelId,
+            outboxDir,
+            ...(files.length > 0 ? { files } : {}),
+          }
 
           if (reply.text.trim().length > 0) {
             this.emit('reply', {
-              sessionId,
-              channelId,
+              ...baseEmit,
               msgId: `pt-${Date.now()}`,
               text: reply.text.trim(),
+            })
+          } else if (files.length > 0) {
+            // No text but files were dropped — treat the files themselves as
+            // the reply. Discord requires non-empty content OR attachments,
+            // so an attachments-only message is valid.
+            this.emit('reply', {
+              ...baseEmit,
+              msgId: `pt-files-${Date.now()}`,
+              text: '',
             })
           } else {
             // Backend exited cleanly but produced no user-facing text — common
@@ -259,8 +292,7 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
               `emitting placeholder so the user isn't left hanging`,
             )
             this.emit('reply', {
-              sessionId,
-              channelId,
+              ...baseEmit,
               msgId: `pt-empty-${Date.now()}`,
               text: '_(no reply text — agent finished on a tool call instead of a message; ask again if you expected one)_',
             })
@@ -275,12 +307,19 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
           const msg = (err as Error).message
           if (msg === 'cancelled') {
             this.log.info(`respond cancelled (session=${sessionId}); queue=${s.queue.length}`)
+            // User pre-empted before we replied — nothing will fire the
+            // dispatcher's outbox cleanup, so rm here to avoid leak.
+            await rm(outboxDir, { recursive: true, force: true }).catch(() => {})
             continue
           }
           this.log.warn(`respond failed (session=${sessionId} backend=${s.backendName}): ${msg}`)
+          // Attach outboxDir so the dispatcher cleans it once the error
+          // message is delivered. files=[] — even if the agent wrote
+          // something partial, attaching scratch on a failed turn is noisy.
           this.emit('reply', {
             sessionId,
             channelId,
+            outboxDir,
             msgId: `pt-err-${Date.now()}`,
             text: `❌ Backend error: ${msg}`,
           })
@@ -292,6 +331,47 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
 
     await s.inFlight
   }
+}
+
+/** Append a short instruction telling the agent where it can drop files to
+ *  attach them to the Discord reply. The path is absolute so it works
+ *  regardless of the agent's $*_WORKDIR. */
+function appendOutboxHint(prompt: string, outboxDir: string): string {
+  const hint =
+    `\n\n[Outbox: any file you Write to \`${outboxDir}\` will be attached to ` +
+    `your reply on Discord (max 10 files, ≤24 MB each). Use this for ` +
+    `screenshots, generated charts, code files, audio renders, etc. The ` +
+    `directory already exists. Don't mention it in your reply text — the ` +
+    `user just sees the attachments.]`
+  return prompt + hint
+}
+
+/** List regular files in the outbox dir. Returns absolute paths. Missing or
+ *  unreadable dir → empty list. Subdirectories are ignored (Discord doesn't
+ *  understand them). Sorted for determinism. */
+async function scanOutbox(dir: string, log: Logger): Promise<string[]> {
+  let entries
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      log.warn(`scanOutbox readdir failed (${dir}):`, err)
+    }
+    return []
+  }
+  const files: string[] = []
+  for (const ent of entries) {
+    if (!ent.isFile()) continue
+    const p = join(dir, ent.name)
+    try {
+      const st = await stat(p)
+      if (st.isFile()) files.push(p)
+    } catch {
+      // file vanished between readdir and stat — skip
+    }
+  }
+  files.sort()
+  return files
 }
 
 /**

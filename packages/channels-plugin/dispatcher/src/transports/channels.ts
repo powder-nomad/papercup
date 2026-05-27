@@ -316,6 +316,7 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
         msgId: frame.msgId,
         text: frame.text,
         replyTo: frame.reply_to,
+        ...(frame.files && frame.files.length > 0 ? { files: frame.files } : {}),
       })
     })
 
