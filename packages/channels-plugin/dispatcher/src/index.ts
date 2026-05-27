@@ -35,6 +35,10 @@ import { TransportRegistry } from './transports/registry.ts'
 import { ChannelsTransport } from './transports/channels.ts'
 import type { SessionTransport, ReplyEvent, PermissionRequestEvent, TurnCompleteEvent } from './transports/types.ts'
 import { defaultLocale, t } from './i18n.ts'
+import { createSchedulerStore } from './scheduler/store.ts'
+import { createScheduler } from './scheduler/index.ts'
+import { createAcl } from './scheduler/acl.ts'
+import type { SchedulerAllowlistApi } from './commands/types.ts'
 
 const log = makeLogger('dispatcher')
 
@@ -96,6 +100,31 @@ async function main(): Promise<void> {
   const sessions = new SessionStore(join(papercupHome, 'sessions.json'))
   const guildConfig = new GuildConfigStore(join(papercupHome, 'guild-config.json'))
   await Promise.all([sessions.load(), guildConfig.load()])
+
+  // -------------------------------------------------------------------------
+  // Scheduler subsystem (F1: cron + queue). See DESIGN-scheduler.md.
+  // BOT_OWNER_ID gates write commands; empty ⇒ no one is owner (read-only).
+  // -------------------------------------------------------------------------
+  const botOwnerId = process.env.BOT_OWNER_ID ?? ''
+  const schedulerStore = createSchedulerStore({ dbPath: join(papercupHome, 'scheduler.db') })
+  let scheduler: ReturnType<typeof createScheduler> | undefined
+  let schedulerAcl: ReturnType<typeof createAcl> | undefined
+  let schedulerAllowlist: SchedulerAllowlistApi | undefined
+  try {
+    schedulerStore.init()
+    schedulerAcl = createAcl({ store: schedulerStore, ownerId: botOwnerId })
+    schedulerAllowlist = {
+      add: (userId, addedBy) =>
+        schedulerStore.addAllowlist({ userId, addedBy, addedAtEpochMs: Date.now() }),
+      remove: userId => schedulerStore.removeAllowlist(userId),
+      list: () => schedulerStore.listAllowlist(),
+    }
+    log.info(
+      `scheduler store initialized: ${join(papercupHome, 'scheduler.db')}, owner=${botOwnerId || '(none)'}`,
+    )
+  } catch (err) {
+    log.error('scheduler init failed; /cron, /queue, /scheduler will reject:', err)
+  }
 
   // ---------------------------------------------------------------------------
   // Transports
@@ -195,6 +224,29 @@ async function main(): Promise<void> {
       return killed
     }
     return transportFor(session).cancel(sessionId)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scheduler factory — needs spawnFor + transportFor closures in scope.
+  // Skipped if scheduler store failed to init.
+  // ---------------------------------------------------------------------------
+  if (schedulerAcl) {
+    scheduler = createScheduler({
+      store: schedulerStore,
+      sessions,
+      log: log.child('scheduler'),
+      ensureSessionRunning: spawnFor,
+      pushEvent: event => {
+        const s = sessions.findById(event.sessionId)
+        if (!s) return false
+        return transportFor(s).pushEvent(event)
+      },
+      isAlive: id => {
+        const s = sessions.findById(id)
+        if (!s) return false
+        return transportFor(s).isAlive(id)
+      },
+    })
   }
 
   // ---------------------------------------------------------------------------
@@ -353,6 +405,9 @@ async function main(): Promise<void> {
     resolvePermission,
     channelsAvailable: () => channelsTransport.isAvailable(),
     voice,
+    scheduler,
+    schedulerAcl,
+    schedulerAllowlist,
   }
 
   const discord = new DiscordChannelClient({
@@ -367,6 +422,10 @@ async function main(): Promise<void> {
   })
 
   await discord.start()
+
+  // Start the scheduler tick loop after Discord is online so any guild-channel
+  // alerts (failure warnings, disabled-job notices) have a place to land.
+  scheduler?.start()
 
   // Re-spawn previously-bound sessions so they're warm before any inbound.
   // Best-effort; failures don't block boot.
@@ -502,6 +561,8 @@ async function main(): Promise<void> {
       try { stop() } catch { /* ignore */ }
     }
     typingStops.clear()
+    try { scheduler?.stop() } catch (err) { log.warn('scheduler stop err:', err) }
+    try { schedulerStore.close() } catch (err) { log.warn('scheduler store close err:', err) }
     try { voice?.shutdown() } catch (err) { log.warn('voice shutdown err:', err) }
     try { tts?.stop() } catch (err) { log.warn('tts stop err:', err) }
     try { stt?.stop() } catch (err) { log.warn('stt stop err:', err) }
