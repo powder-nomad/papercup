@@ -167,3 +167,4 @@ import "./backend-opencode-cli.js";
 import "./backend-crush-cli.js";
 import "./backend-amp-cli.js";
 import "./backend-gemini-api.js";
+import "./backend-antigravity-cli.js";

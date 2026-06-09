@@ -21,8 +21,11 @@ import {
   handleAutocomplete,
   handlePickup,
   handleHangup,
+  handleNew,
+  handleDelete,
+  handleProcs,
 } from './handlers.ts'
-import { handleCron, handleQueue, handleScheduler } from './scheduler-cmds.ts'
+import { handleSchedule, handleQueue, handleScheduler } from './scheduler-cmds.ts'
 import { handleLimitHandler } from './limit-handler-cmds.ts'
 import type { CommandContext } from './types.ts'
 
@@ -129,8 +132,17 @@ export async function dispatchInteraction(
       case 'hangup':
         await handleHangup(interaction, ctx)
         return
-      case 'cron':
-        await handleCron(interaction, ctx)
+      case 'new':
+        await handleNew(interaction, ctx)
+        return
+      case 'delete':
+        await handleDelete(interaction, ctx)
+        return
+      case 'procs':
+        await handleProcs(interaction, ctx)
+        return
+      case 'schedule':
+        await handleSchedule(interaction, ctx)
         return
       case 'queue':
         await handleQueue(interaction, ctx)

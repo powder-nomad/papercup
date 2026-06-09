@@ -56,7 +56,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { makeLogger, type Logger } from './log.ts'
@@ -90,6 +90,7 @@ export type ClaudeChildOpts = {
 type Tracked = {
   sessionName: string
   spawnedAt: number
+  papercupHome: string
 }
 
 export class ClaudeChildManager {
@@ -143,7 +144,8 @@ export class ClaudeChildManager {
         if (!name.startsWith('papercup-')) continue
         const sessionId = name.slice('papercup-'.length)
         if (this.tracked.has(sessionId)) continue
-        this.tracked.set(sessionId, { sessionName: name, spawnedAt: Date.now() })
+        // papercupHome unknown for adopted sessions; kill() cleanup is best-effort.
+        this.tracked.set(sessionId, { sessionName: name, spawnedAt: Date.now(), papercupHome: join(homedir(), '.papercup-channels') })
         adopted.push(sessionId)
         this.log.info(`adopted existing tmux session: ${name}`)
       }
@@ -247,7 +249,7 @@ export class ClaudeChildManager {
     client.stderr?.on('data', (c: Buffer) => { stderrBuf += c.toString('utf8') })
     client.on('exit', (code) => {
       if (code === 0) {
-        this.tracked.set(opts.sessionId, { sessionName, spawnedAt: Date.now() })
+        this.tracked.set(opts.sessionId, { sessionName, spawnedAt: Date.now(), papercupHome: opts.papercupHome })
         this.log.info(`tmux session created (session=${opts.sessionId}, tmux=${sessionName})`)
         // Interactive claude shows a one-time workspace-trust dialog the first
         // time it sees a given cwd ("Is this a project you created or one you
@@ -273,6 +275,7 @@ export class ClaudeChildManager {
     if (!t) return false
     const r = spawnSync('tmux', ['kill-session', '-t', t.sessionName], { stdio: 'ignore' })
     this.tracked.delete(sessionId)
+    this.deleteRuntimeMcpConfig(sessionId, t.papercupHome)
     if (r.status === 0) {
       this.log.info(`tmux session killed (session=${sessionId}, tmux=${t.sessionName})`)
       return true
@@ -395,17 +398,12 @@ export class ClaudeChildManager {
         fireReady()
         return
       }
-      // Resume-spawns of already-trusted sessions show NO dialogs at all.
-      // After 2s of polling without seeing one, declare ready so we don't
-      // sit on queued events for the full 10s deadline.
-      const elapsed = TRUST_POLL_MS - (deadline - Date.now())
-      if (acceptedCount === 0 && elapsed > 2000) {
-        this.log.info(
-          `bootstrap dialogs done (session=${sessionId}, no dialogs seen in ${Math.floor(elapsed)}ms)`,
-        )
-        fireReady()
-        return
-      }
+      // NOTE: the old 2s early-exit ("no dialogs seen") has been removed.
+      // --dangerously-load-development-channels always shows its warning dialog,
+      // but on --resume with a large session claude can take several seconds to
+      // load the transcript before displaying it. Firing onChannelReady early
+      // left the dialog unaccepted forever. The 15s deadline (TRUST_POLL_MS)
+      // is the correct safety net for sessions that genuinely show no dialogs.
       const cap = spawnSync('tmux', ['capture-pane', '-p', '-t', sessionName], {
         encoding: 'utf8',
         timeout: 2000,
@@ -436,27 +434,42 @@ export class ClaudeChildManager {
 
   private writeRuntimeMcpConfig(opts: ClaudeChildOpts): string {
     if (!existsSync(opts.papercupHome)) mkdirSync(opts.papercupHome, { recursive: true, mode: 0o700 })
-    const path = join(opts.papercupHome, 'runtime-mcp.json')
+    // Per-session file: the config embeds session-specific env vars
+    // (PAPERCUP_SESSION_ID, PAPERCUP_DISPATCHER_SOCK) so each session's bun
+    // subprocess gets the right identity. A single shared runtime-mcp.json
+    // would be overwritten on concurrent spawns, causing one session to
+    // steal the other's identity.
+    const path = join(opts.papercupHome, `runtime-mcp-${opts.sessionId}.json`)
     // Merge order (later wins on collision): ECC bundle → papercup-channels.
     // papercup-channels MUST come last so a stray ECC server with the same
     // name can never displace our own plugin.
     //
-    // TODO: replace this hardcoded ECC merge with a config-driven mechanism
-    // (env var pointing at an additional .mcp.json to merge, or a list of
-    // symbolic bundle names). For now the operator gets the ECC bundle
-    // (github, context7, exa, memory, playwright, sequential-thinking)
-    // because that's what their normal claude sessions have, and channels
-    // mode should feel like a normal session.
+    // FIX (claude 2.1.158+): claude no longer inherits the parent tmux
+    // environment into MCP subprocess spawns, AND silently drops stdio
+    // servers whose `command` can't be resolved in its own PATH at startup.
+    // Both issues are fixed here:
+    //   1. Use the absolute bun path so the command is always resolvable.
+    //   2. Pass PAPERCUP_SESSION_ID + PAPERCUP_DISPATCHER_SOCK explicitly
+    //      via the MCP server's `env` field.
     const mcpServers: Record<string, unknown> = {
       ...loadEccMcpServers(this.log),
       'papercup-channels': {
-        command: 'bun',
+        command: resolveBunPath(),
         args: [join(opts.pluginDir, 'server.ts')],
+        env: {
+          PAPERCUP_SESSION_ID: opts.sessionId,
+          PAPERCUP_DISPATCHER_SOCK: opts.dispatcherSock,
+        },
       },
     }
     const config = { mcpServers }
     writeFileSync(path, JSON.stringify(config, null, 2), { mode: 0o600 })
     return path
+  }
+
+  deleteRuntimeMcpConfig(sessionId: string, papercupHome: string): void {
+    const path = join(papercupHome, `runtime-mcp-${sessionId}.json`)
+    try { rmSync(path, { force: true }) } catch { /* best-effort */ }
   }
 }
 
@@ -554,6 +567,28 @@ function tmuxSessionNameFor(sessionId: string): string {
   // and we want them grep-able. UUIDs are dash-only, so a `papercup-` prefix
   // is safe and lets `tmux ls | grep papercup-` find our sessions.
   return `papercup-${sessionId}`
+}
+
+/**
+ * Resolve the absolute path to the bun binary.
+ *
+ * Claude 2.1.158+ silently drops stdio MCP servers whose `command` can't be
+ * found in its own (restricted) PATH at startup. Using the absolute path
+ * avoids the drop even when bun isn't in the system PATH inherited by the
+ * MCP spawner. Checks `~/.bun/bin/bun` (the canonical bun install location)
+ * first, then falls back to `which bun` (for non-standard installs).
+ */
+function resolveBunPath(): string {
+  const candidate = join(homedir(), '.bun', 'bin', 'bun')
+  if (existsSync(candidate)) return candidate
+  try {
+    const r = spawnSync('which', ['bun'], { encoding: 'utf8', timeout: 2000 })
+    if (r.status === 0) {
+      const resolved = r.stdout.trim()
+      if (resolved) return resolved
+    }
+  } catch { /* fall through to bare 'bun' */ }
+  return 'bun'
 }
 
 // Re-exported for callers that still import ChildProcess from this file. Not

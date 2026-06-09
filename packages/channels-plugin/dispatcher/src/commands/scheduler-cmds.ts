@@ -1,7 +1,7 @@
 /**
  * Slash-command handlers for the scheduler subsystem:
  *
- *   /cron      add | list | delete | edit
+ *   /schedule  add | list | delete | edit
  *   /queue     add | list | delete
  *   /scheduler allow | deny | allowlist
  *
@@ -87,9 +87,9 @@ function resolveSessionId(
   return { sessionId: bound.id }
 }
 
-/* ------------------------------ /cron --------------------------------- */
+/* ---------------------------- /schedule ------------------------------- */
 
-export async function handleCron(
+export async function handleSchedule(
   i: ChatInputCommandInteraction,
   ctx: CommandContext,
 ): Promise<void> {
@@ -105,7 +105,7 @@ export async function handleCron(
     if (!acl.canManage(actor, null)) { await replyEphemeral(i, '❌ Not authorized (owner or allowlist only).'); return }
     const sessRes = resolveSessionId(ctx, i)
     if ('error' in sessRes) { await replyEphemeral(i, sessRes.error); return }
-    const expr = i.options.getString('expr', true)
+    const expr = i.options.getString('frequency', true)
     const prompt = i.options.getString('prompt', true)
     try {
       const job = scheduler.addCron({
@@ -116,7 +116,7 @@ export async function handleCron(
       })
       const tzLabel = formatTimezoneLabel(job.tz ?? hostTimezone(), job.nextFireAtEpochMs)
       const next = new Date(job.nextFireAtEpochMs).toISOString()
-      await replyEphemeral(i, `✅ Cron registered \`${shortId(job.id)}\`: \`${expr}\` (${tzLabel}). Next fire: ${next}.`)
+      await replyEphemeral(i, `✅ Schedule registered \`${shortId(job.id)}\`: \`${expr}\` (${tzLabel}). Next fire: ${next}.`)
     } catch (err) {
       await replyEphemeral(i, `❌ ${(err as Error).message}`)
     }
@@ -137,7 +137,7 @@ export async function handleCron(
     }
     if (!acl.isOwner(actor)) filter.ownerId = actor
     const rows = scheduler.listJobs(filter).slice(0, MAX_LIST_ROWS)
-    if (rows.length === 0) { await replyEphemeral(i, 'No cron jobs.'); return }
+    if (rows.length === 0) { await replyEphemeral(i, 'No scheduled jobs.'); return }
     await replyEphemeral(i, rows.map(formatJobLine).join('\n'))
     return
   }
@@ -167,7 +167,7 @@ export async function handleCron(
     return
   }
 
-  await replyEphemeral(i, `❌ Unknown /cron subcommand: ${sub}`)
+  await replyEphemeral(i, `❌ Unknown /schedule subcommand: ${sub}`)
 }
 
 /* ------------------------------ /queue -------------------------------- */

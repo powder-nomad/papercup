@@ -250,7 +250,7 @@ test('watcher ignores reply when session does not exist', () => {
 })
 
 test('watcher ignores reply for backend with no registered matcher', () => {
-  const h = setup({ backend: 'gemini-cli' })
+  const h = setup({ backend: 'codex' })
   try {
     const futureSec = Math.floor((Date.now() + 60_000) / 1000)
     h.watcher.handleReply(reply(`usage limit reached|${futureSec}`))

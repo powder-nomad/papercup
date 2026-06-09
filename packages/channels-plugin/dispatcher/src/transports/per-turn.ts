@@ -254,6 +254,26 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
         this.log.info(
           `respond start: session=${sessionId} backend=${s.backendName} prompt_len=${promptWithOutbox.length} outbox=${outboxDir}`,
         )
+        const heartbeatStartMs = Date.now()
+        const HEARTBEAT_INTERVAL_MS = 3 * 60 * 1000
+        const HEARTBEAT_CEILING_MS = 60 * 60 * 1000
+        let heartbeatHandle: ReturnType<typeof setInterval> | undefined = setInterval(() => {
+          const elapsedMin = Math.round((Date.now() - heartbeatStartMs) / 60_000)
+          const atCeiling = (Date.now() - heartbeatStartMs) >= HEARTBEAT_CEILING_MS
+          const text = atCeiling
+            ? `⚠️ Still working after ${elapsedMin}m — use /cancel if stuck.`
+            : `⏳ Still working... (${elapsedMin}m elapsed)`
+          this.emit('reply', {
+            sessionId,
+            channelId,
+            msgId: `pt-hb-${Date.now()}`,
+            text,
+          })
+          if (atCeiling) {
+            clearInterval(heartbeatHandle)
+            heartbeatHandle = undefined
+          }
+        }, HEARTBEAT_INTERVAL_MS)
         try {
           const reply = await backend.respond(promptWithOutbox, { outboxDir })
           if (s.cfg) s.cfg = { ...s.cfg, resume: true }
@@ -323,6 +343,9 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
             msgId: `pt-err-${Date.now()}`,
             text: `❌ Backend error: ${msg}`,
           })
+        } finally {
+          clearInterval(heartbeatHandle)
+          heartbeatHandle = undefined
         }
       }
     })().finally(() => {

@@ -177,3 +177,4 @@ import "./gemini-cli.ts";
 import "./opencode-cli.ts";
 import "./crush-cli.ts";
 import "./amp-cli.ts";
+import "./antigravity-cli.ts";

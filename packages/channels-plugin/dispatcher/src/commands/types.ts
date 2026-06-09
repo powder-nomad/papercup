@@ -96,4 +96,9 @@ export type CommandContext = {
    * Limit-handler API (F2). Undefined when scheduler init fails.
    */
   schedulerLimit?: SchedulerLimitApi
+  /**
+   * Background process manager — lists and kills agent-spawned processes.
+   * Always present after boot; /procs handlers use this directly.
+   */
+  processManager?: import('../process-manager.ts').ProcessManager
 }

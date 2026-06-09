@@ -36,9 +36,9 @@ export const STATIC_MODELS: ModelInfo[] = [
   { id: "gpt-4.1",                     provider: "openai",   family: "gpt-4.1",         backends: ["openai-compat"] },
   { id: "gpt-4o",                      provider: "openai",   family: "gpt-4o",          backends: ["openai-compat"] },
   { id: "o3",                          provider: "openai",   family: "o3",              backends: ["openai-compat"] },
-  { id: "gemini-2.5-pro",              provider: "google",   family: "gemini-2.5",      backends: ["gemini-api", "gemini-cli"] },
-  { id: "gemini-2.5-flash",            provider: "google",   family: "gemini-2.5",      backends: ["gemini-api", "gemini-cli"] },
-  { id: "gemini-2.0-flash",            provider: "google",   family: "gemini-2.0",      backends: ["gemini-api", "gemini-cli"] },
+  { id: "gemini-2.5-pro",              provider: "google",   family: "gemini-2.5",      backends: ["gemini-api", "gemini-cli", "antigravity-cli"] },
+  { id: "gemini-2.5-flash",            provider: "google",   family: "gemini-2.5",      backends: ["gemini-api", "gemini-cli", "antigravity-cli"] },
+  { id: "gemini-2.0-flash",            provider: "google",   family: "gemini-2.0",      backends: ["gemini-api", "gemini-cli", "antigravity-cli"] },
   { id: "grok-4",                      provider: "xai",      family: "grok-4",          backends: ["openai-compat"], notes: "set OPENAI_COMPAT_BASE_URL=https://api.x.ai/v1" },
   { id: "llama-3.3-70b",               provider: "meta",     family: "llama-3.3",       backends: ["openai-compat"], notes: "via Groq/Together/Ollama base URL" },
   { id: "deepseek-v3",                 provider: "deepseek", family: "deepseek-v3",     backends: ["openai-compat"] },
@@ -212,7 +212,7 @@ async function fetchGemini(): Promise<ModelInfo[]> {
       id,
       provider: "google" as const,
       family: id.split("-").slice(0, 2).join("-"),
-      backends: ["gemini-api", "gemini-cli"],
+      backends: ["gemini-api", "gemini-cli", "antigravity-cli"],
     }));
 }
 

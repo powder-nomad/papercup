@@ -60,6 +60,7 @@ const commands = [
           { name: 'claude-code (default)', value: 'claude-code', name_localizations: { ko: 'claude-code (기본값)' } },
           { name: 'codex (OpenAI Codex CLI)', value: 'codex' },
           { name: 'gemini-cli (Google Gemini CLI)', value: 'gemini-cli' },
+          { name: 'antigravity-cli (Antigravity CLI)', value: 'antigravity-cli' },
           { name: 'aider', value: 'aider-cli' },
           { name: 'opencode', value: 'opencode-cli' },
           { name: 'crush (Charm)', value: 'crush-cli' },
@@ -99,6 +100,7 @@ const commands = [
           { name: 'claude-code', value: 'claude-code' },
           { name: 'codex', value: 'codex' },
           { name: 'gemini-cli', value: 'gemini-cli' },
+          { name: 'antigravity-cli', value: 'antigravity-cli' },
           { name: 'aider', value: 'aider-cli' },
           { name: 'opencode', value: 'opencode-cli' },
           { name: 'crush', value: 'crush-cli' },
@@ -165,6 +167,7 @@ const commands = [
           { name: 'claude-code', value: 'claude-code' },
           { name: 'codex', value: 'codex' },
           { name: 'gemini-cli', value: 'gemini-cli' },
+          { name: 'antigravity-cli', value: 'antigravity-cli' },
           { name: 'gemini-api', value: 'gemini-api' },
           { name: 'anthropic-api', value: 'anthropic-api' },
           { name: 'openai-compat', value: 'openai-compat' },
@@ -282,6 +285,7 @@ const commands = [
           { name: 'claude-code', value: 'claude-code' },
           { name: 'codex', value: 'codex' },
           { name: 'gemini-cli (voice default)', value: 'gemini-cli', name_localizations: { ko: 'gemini-cli (음성 기본값)' } },
+          { name: 'antigravity-cli', value: 'antigravity-cli' },
           { name: 'aider', value: 'aider-cli' },
           { name: 'opencode', value: 'opencode-cli' },
           { name: 'crush', value: 'crush-cli' },
@@ -329,17 +333,17 @@ const commands = [
     .setDescriptionLocalizations({ ko: '봇이 음성 채널에서 나갑니다. /voice-leave의 별칭 (텍스트 세션 보존).' })
     .toJSON(),
   new SlashCommandBuilder()
-    .setName('cron')
-    .setDescription('Recurring cron prompts that fire into a session.')
-    .setDescriptionLocalizations({ ko: '세션에 주기적으로 프롬프트를 전송하는 cron 작업.' })
+    .setName('schedule')
+    .setDescription('Recurring schedule prompts that fire into a session.')
+    .setDescriptionLocalizations({ ko: '세션에 주기적으로 프롬프트를 전송하는 스케줄 작업.' })
     .addSubcommand(s =>
       s
         .setName('add')
-        .setDescription('Register a new cron job.')
-        .setDescriptionLocalizations({ ko: '새로운 cron 작업을 등록합니다.' })
+        .setDescription('Register a new scheduled job.')
+        .setDescriptionLocalizations({ ko: '새로운 스케줄 작업을 등록합니다.' })
         .addStringOption(o =>
-          o.setName('expr').setDescription('Cron expression, e.g. "0 9 * * *".')
-           .setDescriptionLocalizations({ ko: 'cron 표현식 (예: "0 9 * * *").' })
+          o.setName('frequency').setDescription('Cron expression, e.g. "0 9 * * *".')
+           .setDescriptionLocalizations({ ko: 'cron 표현식 빈도 (예: "0 9 * * *").' })
            .setRequired(true).setMaxLength(120),
         )
         .addStringOption(o =>
@@ -356,8 +360,8 @@ const commands = [
     .addSubcommand(s =>
       s
         .setName('list')
-        .setDescription('List cron jobs you can see (owner: all; others: own).')
-        .setDescriptionLocalizations({ ko: '볼 수 있는 cron 작업 목록 (오너: 전체; 그 외: 본인 것만).' })
+        .setDescription('List scheduled jobs you can see (owner: all; others: own).')
+        .setDescriptionLocalizations({ ko: '볼 수 있는 스케줄 작업 목록 (오너: 전체; 그 외: 본인 것만).' })
         .addStringOption(o =>
           o.setName('session').setDescription('Filter by session name or id.')
            .setDescriptionLocalizations({ ko: '세션 이름/id로 필터링.' })
@@ -367,8 +371,8 @@ const commands = [
     .addSubcommand(s =>
       s
         .setName('delete')
-        .setDescription('Delete a cron job by id (8-char prefix accepted).')
-        .setDescriptionLocalizations({ ko: 'id로 cron 작업 삭제 (8자리 prefix 허용).' })
+        .setDescription('Delete a scheduled job by id (8-char prefix accepted).')
+        .setDescriptionLocalizations({ ko: 'id로 스케줄 작업 삭제 (8자리 prefix 허용).' })
         .addStringOption(o =>
           o.setName('id').setDescription('Job id or 8-char prefix.')
            .setDescriptionLocalizations({ ko: '작업 id 또는 8자리 prefix.' })
@@ -378,8 +382,8 @@ const commands = [
     .addSubcommand(s =>
       s
         .setName('edit')
-        .setDescription('Toggle enabled state on a cron job.')
-        .setDescriptionLocalizations({ ko: 'cron 작업의 활성화 상태 변경.' })
+        .setDescription('Toggle enabled state on a scheduled job.')
+        .setDescriptionLocalizations({ ko: '스케줄 작업의 활성화 상태 변경.' })
         .addStringOption(o =>
           o.setName('id').setDescription('Job id or 8-char prefix.')
            .setDescriptionLocalizations({ ko: '작업 id 또는 8자리 prefix.' })
@@ -542,6 +546,100 @@ const commands = [
           o.setName('session').setDescription('Target session name or id. Defaults to this channel\'s session.')
            .setDescriptionLocalizations({ ko: '세션 이름/ID. 생략 시 채널의 세션.' })
            .setRequired(false),
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('new')
+    .setDescription('(Admin) Create a new session and bind THIS channel to it. Always creates fresh — never reuses.')
+    .setDescriptionLocalizations({ ko: '(관리자) 새 세션을 생성하고 이 채널에 바인드합니다. 항상 새로 생성 — 기존 세션 재사용 없음.' })
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption(o =>
+      o
+        .setName('name')
+        .setDescription('Session name. Auto-generated if omitted.')
+        .setDescriptionLocalizations({ ko: '세션 이름. 생략 시 자동 생성.' })
+        .setRequired(false)
+        .setMaxLength(60),
+    )
+    .addStringOption(o =>
+      o
+        .setName('transport')
+        .setDescription('Transport mode. Defaults to channels for claude-code, per-turn otherwise.')
+        .setDescriptionLocalizations({ ko: 'Transport 모드. claude-code는 channels 기본, 나머지는 per-turn 기본.' })
+        .setRequired(false)
+        .addChoices(
+          { name: 'channels (long-lived, default for claude-code)', value: 'channels', name_localizations: { ko: 'channels (장기 세션, claude-code 기본값)' } },
+          { name: 'per-turn (phone-call interrupts)', value: 'per-turn', name_localizations: { ko: 'per-turn (전화 통화 중간 끼어들기)' } },
+        ),
+    )
+    .addStringOption(o =>
+      o
+        .setName('backend')
+        .setDescription('Backend agent CLI. Defaults to claude-code.')
+        .setDescriptionLocalizations({ ko: 'Backend 에이전트 CLI. 기본값 claude-code.' })
+        .setRequired(false)
+        .addChoices(
+          { name: 'claude-code (default)', value: 'claude-code', name_localizations: { ko: 'claude-code (기본값)' } },
+          { name: 'codex (OpenAI Codex CLI)', value: 'codex' },
+          { name: 'gemini-cli (Google Gemini CLI)', value: 'gemini-cli' },
+          { name: 'antigravity-cli (Antigravity CLI)', value: 'antigravity-cli' },
+          { name: 'aider', value: 'aider-cli' },
+          { name: 'opencode', value: 'opencode-cli' },
+          { name: 'crush (Charm)', value: 'crush-cli' },
+          { name: 'amp (Sourcegraph)', value: 'amp-cli' },
+        ),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('delete')
+    .setDescription('(Admin) Kill and permanently delete a session. Unbinds from any channel.')
+    .setDescriptionLocalizations({ ko: '(관리자) 세션을 종료하고 영구 삭제합니다. 채널 바인딩도 해제됩니다.' })
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption(o =>
+      o
+        .setName('name')
+        .setDescription('Session name to delete.')
+        .setDescriptionLocalizations({ ko: '삭제할 세션 이름.' })
+        .setRequired(true)
+        .setMaxLength(80),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('procs')
+    .setDescription('Inspect and manage agent-spawned background processes.')
+    .setDescriptionLocalizations({ ko: '에이전트가 실행한 백그라운드 프로세스를 조회하고 관리합니다.' })
+    .addSubcommand(s =>
+      s
+        .setName('list')
+        .setDescription('List all tracked background processes and their status.')
+        .setDescriptionLocalizations({ ko: '추적 중인 모든 백그라운드 프로세스와 상태 목록.' }),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('kill')
+        .setDescription('Send SIGTERM to a background process by id.')
+        .setDescriptionLocalizations({ ko: 'id로 백그라운드 프로세스에 SIGTERM 전송.' })
+        .addStringOption(o =>
+          o.setName('id').setDescription('8-char process id from /procs list.')
+           .setDescriptionLocalizations({ ko: '/procs list의 8자리 프로세스 id.' })
+           .setRequired(true).setMaxLength(16),
+        ),
+    )
+    .addSubcommand(s =>
+      s
+        .setName('logs')
+        .setDescription('Show recent stdout/stderr lines from a background process.')
+        .setDescriptionLocalizations({ ko: '백그라운드 프로세스의 최근 stdout/stderr 출력.' })
+        .addStringOption(o =>
+          o.setName('id').setDescription('8-char process id from /procs list.')
+           .setDescriptionLocalizations({ ko: '/procs list의 8자리 프로세스 id.' })
+           .setRequired(true).setMaxLength(16),
+        )
+        .addIntegerOption(o =>
+          o.setName('lines').setDescription('Number of lines to show (default 30, max 500).')
+           .setDescriptionLocalizations({ ko: '표시할 줄 수 (기본 30, 최대 500).' })
+           .setRequired(false).setMinValue(1).setMaxValue(500),
         ),
     )
     .toJSON(),

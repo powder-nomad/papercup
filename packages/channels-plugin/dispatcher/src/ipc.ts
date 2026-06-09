@@ -44,11 +44,33 @@ export type PluginPermissionRequest = {
   input_preview: string
 }
 
+/**
+ * Agent-initiated background process operation. The plugin sends this when an
+ * MCP tool (spawn_bg / list_bg / kill_bg / tail_bg) is called. The dispatcher
+ * responds with DispatcherBgResponse keyed by the same req_id.
+ */
+export type PluginBgRequest = {
+  type: 'bg_req'
+  req_id: string
+  session: string
+  op: 'spawn' | 'list' | 'kill' | 'tail'
+  // spawn
+  name?: string
+  command?: string
+  args?: string[]
+  cwd?: string
+  // kill / tail
+  id?: string
+  // tail
+  lines?: number
+}
+
 export type PluginToDispatcher =
   | PluginHello
   | PluginReply
   | PluginLog
   | PluginPermissionRequest
+  | PluginBgRequest
 
 export type DispatcherEvent = {
   type: 'event'
@@ -72,7 +94,17 @@ export type DispatcherPermissionVerdict = {
   behavior: 'allow' | 'deny'
 }
 
+/** Response to a PluginBgRequest. ok=false means the op failed; error has details. */
+export type DispatcherBgResponse = {
+  type: 'bg_res'
+  req_id: string
+  ok: boolean
+  data?: unknown
+  error?: string
+}
+
 export type DispatcherToPlugin =
   | DispatcherEvent
   | DispatcherShutdown
   | DispatcherPermissionVerdict
+  | DispatcherBgResponse

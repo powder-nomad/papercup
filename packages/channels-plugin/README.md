@@ -123,24 +123,29 @@ claude children. Use the slash commands to manage bindings:
 
 | Command | Effect |
 | --- | --- |
+| `/new [name:<string>] [transport:<t>] [backend:<b>]` | (Admin) Create a **fresh** session, bind to this channel, and spawn immediately. Unlike `/bind`, never reattaches an existing session. |
+| `/delete name:<session>` | (Admin) Kill the agent, unbind from its channel, and permanently remove the session record. |
 | `/bind` (in a channel) | Bind this channel to a new (or existing) claude session. Spawns the child. |
 | `/bind name:foo` | Bind this channel to existing session `foo`. |
 | `/bind transport:per-turn` | Bind a new session using the per-turn transport (phone-call interrupts). Omit `transport:` for the default `channels`. |
-| `/bind backend:<…>` | Pick the agent CLI: `claude-code` (default), `codex`, `gemini-cli`, `aider-cli`, `opencode-cli`, `crush-cli`, `amp-cli`. Non-claude backends auto-pick `transport:per-turn`. |
+| `/bind backend:<…>` | Pick the agent CLI: `claude-code` (default), `codex`, `gemini-cli`, `antigravity-cli`, `aider-cli`, `opencode-cli`, `crush-cli`, `amp-cli`. Non-claude backends auto-pick `transport:per-turn`. |
 | `/transport mode:<channels\|per-turn>` | Switch this channel's bound session to a different transport. Kills + respawns. |
 | `/backend name:<…>` | Switch this channel's bound session to a different backend CLI. Kills + respawns. Channels-transport sessions are pinned to `claude-code`. |
 | `/unbind` | Kill this channel's claude child and drop the binding. Session metadata kept. |
-| `/resume name:foo` | In this bound channel, switch to session `foo` (create if missing). Mirrors `claude --resume <name>`. Kills the previously-bound session's child; transcripts persist on disk so a future `/resume name:<prev>` brings it back. |
+| `/resume name:foo` | In this bound channel, switch to session `foo` (create if missing). Kills the previously-bound session's child; transcripts persist on disk. |
 | `/sessions` | List all sessions, idle time, model/effort/perm overrides. 🟢 = plugin connected. |
+| `/status` | Show this channel's session: transport, backend, model, effort, permissions, idle time. |
+| `/respawn` | Kill (if alive) and immediately respawn this channel's agent. Use when `/status` shows plugin offline. |
 | `/rename name:new` | Rename the session bound to this channel. |
 | `/model name:opus` | Set the model for this channel's session. Empty `name` clears the override. Kills the child; next message respawns. |
 | `/effort level:high` | Set reasoning effort. `default` clears the override. Kills the child; next message respawns. |
 | `/permissions mode:plan` | Set tool permission policy. `default-for-mode` clears the override (back to `bypassPermissions`). Kills the child; next message respawns. |
 | `/cancel` | Abort the in-flight turn (SIGTERM the claude child). Next message respawns the session. |
-| `/voice-join` | Bot joins your current voice channel and routes your speech into this text channel's session. Requires this text channel to be `/bind`'d and you to already be in a voice channel. Transcripts post here as `🎙️ …`; replies are TTS'd back. |
-| `/voice-leave` | Disconnect the voice line for this guild. The claude session is preserved — text still works. |
+| `/compact [name:<session>]` | Fork this channel's session into a new one seeded with a summarised handoff. Falls back to the bound session if `name:` is omitted. |
+| `/voice-join` | Bot joins your current voice channel and routes your speech into this text channel's session. |
+| `/voice-leave` / `/hangup` | Disconnect the voice line for this guild. The claude session is preserved — text still works. |
+| `/pickup` | Join your voice channel + bind this text channel in one step. Accepts `backend`, `model`, `effort`, `transport`. |
 | `/say text:<text>` | Make the bot speak arbitrary text in the active voice line. Debug helper for the TTS pathway. |
-| `/compact [name:<session>]` | Fork this channel's session into a new one (`<base>-c2`, `-c3`, …) seeded with a summarised handoff. Kills the source child, persists the handoff to `~/.papercup-channels/handoffs/<newName>.md`, and rebinds the channel to the new session. Falls back to the bound session if `name:` is omitted. |
 
 Boot-time log when you have a bound channel:
 
@@ -183,21 +188,24 @@ Next message in the channel respawns via `--resume`, picking up the transcript.
 | Symptom | Likely cause / fix |
 | --- | --- |
 | `plugin not yet connected for session=... — dropping message` | First message after boot landed before the plugin's UDS handshake. Send again — handshake takes ~1-2s. |
-| Dispatcher boots but the plugin never says `hello` | Check claude stderr in the dispatcher log. Most likely a `bun: not found` (install Bun) or a `Failed to load MCP server` from a bad `runtime-mcp.json` (check perms on `~/.papercup-channels/`). |
+| Dispatcher boots but the plugin never says `hello` | On **claude ≥ 2.1.158**, MCP subprocesses no longer inherit the parent env and `bun` is silently dropped if not on the system PATH. The dispatcher writes a per-session `runtime-mcp-<id>.json` with an absolute bun path and explicit `env` field — ensure you're on a dispatcher version that does this. |
+| `no MCP server configured with that name` shown in tmux pane | Cosmetic display bug in claude's TUI — channels ARE registered. Ignore it; verify with `[uds] plugin hello` in the dispatcher log. |
+| Per-turn session shows `⏳ Still working...` messages | Normal heartbeat — emitted every 3 minutes while a turn is in-flight so you know the agent is alive. Use `/cancel` if the turn appears stuck. |
+| `Error: timed out waiting for response` with `antigravity-cli` backend | agy's built-in `--print-timeout` (default 5 min) fired. The dispatcher now passes `--print-timeout 24h`. Override via `ANTIGRAVITY_PRINT_TIMEOUT` env var if you need a different ceiling. |
 | `is not on the approved channels allowlist` from claude | The `--dangerously-load-development-channels server:papercup-channels` flag isn't being passed. Check `dispatcher/src/claude-children.ts` was modified or that you're on claude ≥ 2.1.80. |
 | Inbound Discord messages have empty `content` | **Message Content Intent** isn't enabled in the Discord dev portal. |
 | Bot replies in Discord but the plugin process keeps respawning | UDS socket got deleted or `~/.papercup-channels/` perms changed. Both should be `0o700`/`0o600`. |
 
-## Scheduler — `/cron`, `/queue`, `/scheduler`
+## Scheduler — `/schedule`, `/queue`, `/scheduler`
 
 The dispatcher carries a small scheduler subsystem (`DESIGN-scheduler.md`)
 that fires prompts into a session as if a user typed them. Three surfaces:
 
-- `/cron add expr:"0 9 * * *" prompt:"…" [session:<name|id>]` — recurring
+- `/schedule add frequency:"0 9 * * *" prompt:"…" [session:<name|id>]` — recurring
   prompt evaluated against host-local TZ. If `session:` is omitted, the
   channel's bound session is used.
-- `/cron list [session:…]`, `/cron edit id:<8-char|full> enabled:…`,
-  `/cron delete id:<8-char|full>`.
+- `/schedule list [session:…]`, `/schedule edit id:<8-char|full> enabled:…`,
+  `/schedule delete id:<8-char|full>`.
 - `/queue add at:"+2h" | "23:30" | "<ISO 8601>" prompt:"…" [session:…]` —
   one-shot prompt. Accepted `at` forms: `+Nh|m|d` relative delta (cap 30d),
   24h clock `HH:mm` (next occurrence in host TZ), or ISO 8601.
@@ -360,6 +368,16 @@ The auto-compact trigger uses the same branching: channels sessions get
 native `/compact`, per-turn sessions get `compactSession()`. The Discord
 notice tells you which path fired (`Running native /compact` vs `Forking →
 new session`).
+
+## Per-turn backend env vars
+
+| Var | Default | Effect |
+| --- | --- | --- |
+| `ANTIGRAVITY_BINARY` | `agy` | Path to the `agy` binary. |
+| `ANTIGRAVITY_WORKDIR` | `process.cwd()` | Working directory for `agy` spawns. |
+| `ANTIGRAVITY_DEFAULT_MODEL` | — | Default model passed to `agy`. |
+| `ANTIGRAVITY_EXTRA_ARGS` | — | Extra args appended to every `agy -p` invocation. |
+| `ANTIGRAVITY_PRINT_TIMEOUT` | `24h` | Override agy's built-in `--print-timeout` (default 5m). Uses Go duration syntax (`Nh`, `Nm`, `Ns`). The dispatcher sets this to `24h` so long-running tasks aren't aborted; per-turn heartbeats handle user visibility instead. |
 
 ## Voice — env vars
 

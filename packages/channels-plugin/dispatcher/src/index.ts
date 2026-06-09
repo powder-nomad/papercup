@@ -32,6 +32,7 @@ import { bootWhisperSidecar } from './voice/sidecar.ts'
 import { VoiceService, type VoiceUtterance } from './voice/voice-line.ts'
 import { createTts, type TtsEngine } from '@papercup/voice-stack/tts'
 import { TransportRegistry } from './transports/registry.ts'
+import { ProcessManager } from './process-manager.ts'
 import { ChannelsTransport } from './transports/channels.ts'
 import type { SessionTransport, ReplyEvent, PermissionRequestEvent, TurnCompleteEvent } from './transports/types.ts'
 import { defaultLocale, t } from './i18n.ts'
@@ -115,7 +116,7 @@ async function main(): Promise<void> {
   await Promise.all([sessions.load(), guildConfig.load()])
 
   // -------------------------------------------------------------------------
-  // Scheduler subsystem (F1: cron + queue). See DESIGN-scheduler.md.
+  // Scheduler subsystem (F1: schedule + queue). See DESIGN-scheduler.md.
   // BOT_OWNER_ID gates write commands; empty ⇒ no one is owner (read-only).
   // -------------------------------------------------------------------------
   const botOwnerId = process.env.BOT_OWNER_ID ?? ''
@@ -167,7 +168,7 @@ async function main(): Promise<void> {
       `scheduler store initialized: ${join(papercupHome, 'scheduler.db')}, owner=${botOwnerId || '(none)'}`,
     )
   } catch (err) {
-    log.error('scheduler init failed; /cron, /queue, /scheduler will reject:', err)
+    log.error('scheduler init failed; /schedule, /queue, /scheduler will reject:', err)
   }
 
   // ---------------------------------------------------------------------------
@@ -180,6 +181,8 @@ async function main(): Promise<void> {
   channelsTransport.setAllowlistCheck(userId =>
     allowedUserIds.size === 0 || allowedUserIds.has(userId),
   )
+  const processManager = new ProcessManager()
+  channelsTransport.setProcessManager(processManager)
 
   // -------------------------------------------------------------------------
   // Voice subsystem. Best-effort: if the Whisper sidecar fails to start (no
@@ -266,6 +269,12 @@ async function main(): Promise<void> {
 
   function killFor(sessionId: string): boolean {
     contextWarnTier.delete(sessionId)
+    // Clear the in-process spawn record so the next spawnFor() falls back to
+    // claudeSessionPersisted() rather than blindly passing --resume. Without
+    // this, a session reaped before its first channel notification (and before
+    // claude writes the .jsonl to disk) would respawn with --resume pointing at
+    // a non-existent session, causing MCP initialization to fail silently.
+    everSpawned.delete(sessionId)
     const session = sessions.findById(sessionId)
     if (!session) {
       let killed = false
@@ -596,6 +605,7 @@ async function main(): Promise<void> {
     schedulerAcl,
     schedulerAllowlist,
     schedulerLimit,
+    processManager,
   }
 
   const discord = new DiscordChannelClient({

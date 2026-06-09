@@ -245,6 +245,7 @@ const commands = [
           { name: "codex (CLI agent)", value: "codex" },
           { name: "aider-cli", value: "aider-cli" },
           { name: "gemini-cli", value: "gemini-cli" },
+          { name: "antigravity-cli", value: "antigravity-cli" },
           { name: "opencode-cli", value: "opencode-cli" },
           { name: "crush-cli", value: "crush-cli" },
           { name: "amp-cli", value: "amp-cli" },

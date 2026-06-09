@@ -20,6 +20,7 @@ import { ClaudeChildManager } from '../claude-children.ts'
 import { UdsServer } from '../uds-server.ts'
 import { makeLogger, type Logger } from '../log.ts'
 import type { DispatcherToPlugin } from '../ipc.ts'
+import type { ProcessManager } from '../process-manager.ts'
 import type {
   SessionTransport,
   SessionTransportEvents,
@@ -51,6 +52,7 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
   private pendingPermissions = new Map<string, PendingPermission>()
   private sessionChannelIds = new Map<string, string>()
   private allowlistCheck: AllowlistCheck = () => true
+  private processManager: ProcessManager | null = null
   private udsStarted = false
   private readonly tmuxAvailable: boolean
   /**
@@ -115,6 +117,10 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
 
   setAllowlistCheck(check: AllowlistCheck): void {
     this.allowlistCheck = check
+  }
+
+  setProcessManager(pm: ProcessManager): void {
+    this.processManager = pm
   }
 
   setPermissionMessageId(requestId: string, messageId: string): void {
@@ -359,6 +365,39 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
       // Next respawn will fire onChannelReady again — clear so the late-
       // drain path in helloReceived doesn't fire prematurely on reconnect.
       this.channelReady.delete(session)
+    })
+
+    this.uds.on('bgRequest', frame => {
+      const pm = this.processManager
+      const respond = (ok: boolean, data?: unknown, error?: string) => {
+        this.uds.sendTo(frame.session, { type: 'bg_res', req_id: frame.req_id, ok, data, error })
+      }
+      if (!pm) { respond(false, undefined, 'process manager not available'); return }
+      if (frame.op === 'spawn') {
+        if (!frame.command || !frame.name) {
+          respond(false, undefined, 'spawn requires name and command'); return
+        }
+        const result = pm.spawn({
+          name: frame.name,
+          command: frame.command,
+          args: frame.args ?? [],
+          cwd: frame.cwd,
+          sessionId: frame.session,
+        })
+        respond(true, result)
+      } else if (frame.op === 'list') {
+        respond(true, pm.list())
+      } else if (frame.op === 'kill') {
+        if (!frame.id) { respond(false, undefined, 'kill requires id'); return }
+        const result = pm.kill(frame.id)
+        respond(result.ok, undefined, result.error)
+      } else if (frame.op === 'tail') {
+        if (!frame.id) { respond(false, undefined, 'tail requires id'); return }
+        const result = pm.tail(frame.id, frame.lines)
+        respond(result.ok, result.lines, result.error)
+      } else {
+        respond(false, undefined, `unknown op: ${(frame as { op: string }).op}`)
+      }
     })
 
     this.uds.on('permissionRequest', frame => {

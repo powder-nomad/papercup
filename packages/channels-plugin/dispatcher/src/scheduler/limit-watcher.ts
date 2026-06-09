@@ -56,7 +56,26 @@ export const claudeCodeMatcher: LimitMatcher = {
   },
 }
 
-const BUILTIN_MATCHERS: LimitMatcher[] = [claudeCodeMatcher]
+export const antigravityCliMatcher: LimitMatcher = {
+  backend: 'antigravity-cli',
+  match(replyText: string): LimitMatch | null {
+    // Succession-era agy emits a similar signature to claude-code
+    return claudeCodeMatcher.match(replyText)
+  },
+}
+
+export const geminiCliMatcher: LimitMatcher = {
+  backend: 'gemini-cli',
+  match(replyText: string): LimitMatch | null {
+    return claudeCodeMatcher.match(replyText)
+  },
+}
+
+const BUILTIN_MATCHERS: LimitMatcher[] = [
+  claudeCodeMatcher,
+  antigravityCliMatcher,
+  geminiCliMatcher,
+]
 
 export type LimitWatcherDeps = {
   scheduler: Scheduler

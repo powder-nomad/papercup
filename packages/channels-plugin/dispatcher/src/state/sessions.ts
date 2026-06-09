@@ -210,6 +210,14 @@ export class SessionStore {
     return s
   }
 
+  async delete(id: string): Promise<boolean> {
+    const idx = this.sessions.findIndex(s => s.id === id)
+    if (idx === -1) return false
+    this.sessions.splice(idx, 1)
+    await this.save()
+    return true
+  }
+
   private uniqueName(base: string): string {
     if (!this.sessions.find(s => s.name === base)) return base
     for (let i = 2; i < 1000; i++) {

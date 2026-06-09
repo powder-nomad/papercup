@@ -33,6 +33,8 @@ Want flag-customized output? Use the [installer wizard](https://powder-nomad.git
 - **`/hangup`** — session preserved, can resume later by name (`/resume name:foo`)
 - **Multilingual auto-routing** — Korean → MeloTTS or XTTS-v2; everything else → Kokoro. Whisper auto-detects language per utterance.
 - **Subagents** — for anything bigger than a quick file read, the speaker spawns a sandboxed background Claude Code instance via an embedded MCP server. You hang up; they keep working.
+- **Advanced Scheduler** — schedule time-deferred prompts (`/queue`) or recurring jobs (`/schedule`) using an embedded SQLite WAL engine.
+- **Context Auto-Compact** — watches token accumulation in long-lived sessions and auto-compacts before context window exhaustion.
 
 ## Capabilities
 

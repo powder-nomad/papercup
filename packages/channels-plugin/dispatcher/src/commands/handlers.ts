@@ -29,7 +29,7 @@ import { t } from '../i18n.ts'
  * conversational" (gemini-flash + per-turn + minimal effort) because round-
  * trip latency matters more than reasoning depth in voice.
  */
-const VOICE_DEFAULT_BACKEND = process.env.PAPERCUP_VOICE_DEFAULT_BACKEND ?? 'gemini-cli'
+const VOICE_DEFAULT_BACKEND = process.env.PAPERCUP_VOICE_DEFAULT_BACKEND ?? 'antigravity-cli'
 const VOICE_DEFAULT_MODEL = process.env.PAPERCUP_VOICE_DEFAULT_MODEL ?? 'gemini-2.5-flash'
 const VOICE_DEFAULT_TRANSPORT = (process.env.PAPERCUP_VOICE_DEFAULT_TRANSPORT ?? 'per-turn') as SessionTransportName
 const VOICE_DEFAULT_EFFORT = process.env.PAPERCUP_VOICE_DEFAULT_EFFORT as SessionEffort | undefined
@@ -977,4 +977,173 @@ export async function handleHangup(
   ctx: CommandContext,
 ): Promise<void> {
   await handleVoiceLeave(interaction, ctx)
+}
+
+/**
+ * /new — always create a fresh session and bind this channel to it.
+ * Unlike /bind (which reattaches an existing session when one is found),
+ * /new unconditionally creates a new one. Useful when you want a clean
+ * slate without first having to /unbind the current session.
+ */
+export async function handleNew(
+  interaction: ChatInputCommandInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+
+  if (!interaction.guildId || !interaction.guild) {
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
+    return
+  }
+  const member = interaction.member
+  if (!(member instanceof GuildMember) || !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.editReply(t(interaction.locale, 'common.permManageGuildBind'))
+    return
+  }
+
+  const channelId = interaction.channelId
+  const nameOpt = interaction.options.getString('name') ?? undefined
+  const transportOpt = (interaction.options.getString('transport') ?? undefined) as
+    | SessionTransportName
+    | undefined
+  const backendOpt = interaction.options.getString('backend') ?? undefined
+
+  if (transportOpt === 'channels' && backendOpt && backendOpt !== 'claude-code') {
+    await interaction.editReply(t(interaction.locale, 'bind.channelsClaudeOnly', { backend: backendOpt }))
+    return
+  }
+  if (transportOpt === 'channels' && !ctx.channelsAvailable()) {
+    await interaction.editReply(t(interaction.locale, 'bind.channelsNeedsTmux'))
+    return
+  }
+
+  const effectiveTransport: SessionTransportName | undefined =
+    transportOpt ?? (backendOpt && backendOpt !== 'claude-code' ? 'per-turn' : undefined)
+
+  const session = await ctx.sessions.create({
+    name: nameOpt,
+    channelId,
+    transport: effectiveTransport,
+    backend: backendOpt,
+  })
+
+  // Enforce channel↔session 1:1 — clear any other session previously bound here.
+  for (const s of ctx.sessions.list()) {
+    if (s.channelId === channelId && s.id !== session.id) {
+      await ctx.sessions.setChannelId(s.id, undefined)
+    }
+  }
+  await ctx.guildConfig.addBoundChannel(interaction.guildId, channelId)
+  ctx.spawnFor(session)
+
+  console.log(
+    `[new] guild ${interaction.guildId} channel ${channelId} → session "${session.name}" ` +
+    `(transport=${session.transport} backend=${session.backend}) by ${(member as GuildMember).user.tag}`,
+  )
+  await interaction.editReply(
+    `✅ New session **${session.name}** created and bound to this channel.\n` +
+    `Transport: \`${session.transport}\` · Backend: \`${session.backend}\``,
+  )
+}
+
+/**
+ * /delete name:<session> — kill the agent (if running), unbind from any
+ * channel, and remove the session from the store permanently.
+ */
+export async function handleDelete(
+  interaction: ChatInputCommandInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+
+  if (!interaction.guildId || !interaction.guild) {
+    await interaction.editReply(t(interaction.locale, 'common.notInGuild'))
+    return
+  }
+  const member = interaction.member
+  if (!(member instanceof GuildMember) || !member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+    await interaction.editReply(t(interaction.locale, 'common.permManageGuildBind'))
+    return
+  }
+
+  const nameOpt = interaction.options.getString('name', true)
+  const session = ctx.sessions.findByName(nameOpt) ?? ctx.sessions.findById(nameOpt)
+  if (!session) {
+    await interaction.editReply(`❌ No session found named **${nameOpt}**.`)
+    return
+  }
+
+  ctx.killFor(session.id)
+
+  const boundChannelId = session.channelId
+  if (boundChannelId && interaction.guildId) {
+    await ctx.guildConfig.removeBoundChannel(interaction.guildId, boundChannelId)
+  }
+
+  await ctx.sessions.delete(session.id)
+
+  console.log(
+    `[delete] session "${session.name}" (${session.id}) deleted by ${(member as GuildMember).user.tag}` +
+    (boundChannelId ? ` (was bound to <#${boundChannelId}>)` : ''),
+  )
+  const unboundNote = boundChannelId ? ` (was bound to <#${boundChannelId}>)` : ''
+  await interaction.editReply(`🗑️ Session **${session.name}** deleted.${unboundNote}`)
+}
+
+/**
+ * /procs — inspect and kill agent-spawned background processes.
+ * Subcommands: list, kill, logs.
+ */
+export async function handleProcs(
+  interaction: ChatInputCommandInteraction,
+  ctx: CommandContext,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+  const pm = ctx.processManager
+  if (!pm) {
+    await interaction.editReply('❌ Process manager not available.')
+    return
+  }
+  const sub = interaction.options.getSubcommand(true)
+
+  if (sub === 'list') {
+    const procs = pm.list()
+    if (procs.length === 0) {
+      await interaction.editReply('No background processes tracked.')
+      return
+    }
+    const now = Date.now()
+    const lines = procs.map(p => {
+      const uptime = p.exitedAt
+        ? `exited ${Math.floor((now - p.exitedAt) / 1000)}s ago (code=${p.exitCode ?? p.signal})`
+        : `running ${Math.floor((now - p.startedAt) / 1000)}s`
+      const sess = ctx.sessions.findById(p.sessionId)?.name ?? p.sessionId.slice(0, 8)
+      return `\`${p.id}\` **${p.name}** · ${p.command} · ${uptime} · session=${sess}`
+    })
+    await interaction.editReply(`**Background processes (${procs.length}):**\n${lines.join('\n')}`)
+    return
+  }
+
+  if (sub === 'kill') {
+    const id = interaction.options.getString('id', true)
+    const result = pm.kill(id)
+    await interaction.editReply(result.ok ? `✅ Sent SIGTERM to process \`${id}\`.` : `❌ ${result.error}`)
+    return
+  }
+
+  if (sub === 'logs') {
+    const id = interaction.options.getString('id', true)
+    const lines = interaction.options.getInteger('lines') ?? 30
+    const result = pm.tail(id, lines)
+    if (!result.ok) {
+      await interaction.editReply(`❌ ${result.error}`)
+      return
+    }
+    const output = (result.lines ?? []).join('\n') || '(no output yet)'
+    const truncated = output.length > 1800 ? '…' + output.slice(-1797) : output
+    await interaction.editReply(`**\`${id}\` last ${lines} lines:**\n\`\`\`\n${truncated}\n\`\`\``)
+    return
+  }
+
+  await interaction.editReply(`Unknown subcommand: ${sub}`)
 }

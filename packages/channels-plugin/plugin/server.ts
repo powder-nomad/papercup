@@ -113,26 +113,133 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['chat_id', 'text'],
       },
     },
+    {
+      name: 'spawn_bg',
+      description: 'Spawn a long-running background process that outlives this session. The process is owned by the dispatcher and survives the 30-minute idle reaper. Use this for servers, watchers, or any command that must keep running while the session is idle.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Short human-readable label shown in /procs list.' },
+          command: { type: 'string', description: 'Executable to run (e.g. "node", "python3", "npm").' },
+          args: { type: 'array', items: { type: 'string' }, description: 'Command arguments.' },
+          cwd: { type: 'string', description: 'Working directory. Defaults to /tmp.' },
+        },
+        required: ['name', 'command'],
+      },
+    },
+    {
+      name: 'list_bg',
+      description: 'List all background processes spawned by any agent session, with their status and uptime.',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'kill_bg',
+      description: 'Send SIGTERM to a background process by its 8-char id (from list_bg).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: '8-char process id from list_bg.' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'tail_bg',
+      description: 'Get the last N lines of stdout/stderr from a background process.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: '8-char process id from list_bg.' },
+          lines: { type: 'number', description: 'Number of lines to return (default 50, max 500).' },
+        },
+        required: ['id'],
+      },
+    },
   ],
 }))
 
 mcp.setRequestHandler(CallToolRequestSchema, async req => {
-  if (req.params.name !== 'reply') {
+  const toolName = req.params.name
+  const toolArgs = (req.params.arguments ?? {}) as Record<string, unknown>
+
+  if (toolName === 'spawn_bg') {
+    const name = String(toolArgs.name ?? '')
+    const command = String(toolArgs.command ?? '')
+    const args = Array.isArray(toolArgs.args) ? (toolArgs.args as unknown[]).map(String) : []
+    const cwd = typeof toolArgs.cwd === 'string' ? toolArgs.cwd : undefined
+    if (!name || !command) {
+      return { content: [{ type: 'text', text: 'spawn_bg requires name and command' }], isError: true }
+    }
+    try {
+      const res = await sendBgReq('spawn', { name, command, args, cwd })
+      if (!res.ok) return { content: [{ type: 'text', text: `spawn_bg failed: ${res.error}` }], isError: true }
+      const { id } = res.data as { id: string }
+      return { content: [{ type: 'text', text: `Started background process \`${id}\` (${name}). Use list_bg to check status, kill_bg to stop, tail_bg for logs.` }] }
+    } catch (e) {
+      return { content: [{ type: 'text', text: `spawn_bg error: ${(e as Error).message}` }], isError: true }
+    }
+  }
+
+  if (toolName === 'list_bg') {
+    try {
+      const res = await sendBgReq('list', {})
+      if (!res.ok) return { content: [{ type: 'text', text: `list_bg failed: ${res.error}` }], isError: true }
+      const procs = res.data as Array<{ id: string; name: string; command: string; pid: number | null; startedAt: number; exitedAt: number | null; exitCode: number | null; signal: string | null }>
+      if (!procs.length) return { content: [{ type: 'text', text: 'No background processes running.' }] }
+      const now = Date.now()
+      const lines = procs.map(p => {
+        const status = p.exitedAt
+          ? `exited ${Math.floor((now - p.exitedAt) / 1000)}s ago (code=${p.exitCode ?? p.signal})`
+          : `running ${Math.floor((now - p.startedAt) / 1000)}s (pid=${p.pid})`
+        return `${p.id} | ${p.name} | ${p.command} | ${status}`
+      })
+      return { content: [{ type: 'text', text: lines.join('\n') }] }
+    } catch (e) {
+      return { content: [{ type: 'text', text: `list_bg error: ${(e as Error).message}` }], isError: true }
+    }
+  }
+
+  if (toolName === 'kill_bg') {
+    const id = String(toolArgs.id ?? '')
+    if (!id) return { content: [{ type: 'text', text: 'kill_bg requires id' }], isError: true }
+    try {
+      const res = await sendBgReq('kill', { id })
+      if (!res.ok) return { content: [{ type: 'text', text: `kill_bg failed: ${res.error}` }], isError: true }
+      return { content: [{ type: 'text', text: `Sent SIGTERM to process \`${id}\`.` }] }
+    } catch (e) {
+      return { content: [{ type: 'text', text: `kill_bg error: ${(e as Error).message}` }], isError: true }
+    }
+  }
+
+  if (toolName === 'tail_bg') {
+    const id = String(toolArgs.id ?? '')
+    const lines = typeof toolArgs.lines === 'number' ? toolArgs.lines : 50
+    if (!id) return { content: [{ type: 'text', text: 'tail_bg requires id' }], isError: true }
+    try {
+      const res = await sendBgReq('tail', { id, lines })
+      if (!res.ok) return { content: [{ type: 'text', text: `tail_bg failed: ${res.error}` }], isError: true }
+      const output = (res.data as string[]).join('\n') || '(no output yet)'
+      return { content: [{ type: 'text', text: output }] }
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tail_bg error: ${(e as Error).message}` }], isError: true }
+    }
+  }
+
+  if (toolName !== 'reply') {
     return {
-      content: [{ type: 'text', text: `unknown tool: ${req.params.name}` }],
+      content: [{ type: 'text', text: `unknown tool: ${toolName}` }],
       isError: true,
     }
   }
-  const args = (req.params.arguments ?? {}) as Record<string, unknown>
-  const chat_id = typeof args.chat_id === 'string' ? args.chat_id : ''
-  const text = typeof args.text === 'string' ? args.text : ''
-  const reply_to = typeof args.reply_to === 'string' ? args.reply_to : undefined
+  const chat_id = typeof toolArgs.chat_id === 'string' ? toolArgs.chat_id : ''
+  const text = typeof toolArgs.text === 'string' ? toolArgs.text : ''
+  const reply_to = typeof toolArgs.reply_to === 'string' ? toolArgs.reply_to : undefined
   // Accept any absolute path claude provides; the dispatcher validates
   // (stat, size cap, count cap) and drops bad entries with a warning rather
   // than failing the whole reply. Non-string array entries are filtered out
   // here so the wire frame stays well-typed.
-  const filesArg = Array.isArray(args.files)
-    ? (args.files as unknown[]).filter((p): p is string => typeof p === 'string' && p.length > 0)
+  const filesArg = Array.isArray(toolArgs.files)
+    ? (toolArgs.files as unknown[]).filter((p): p is string => typeof p === 'string' && p.length > 0)
     : []
   const files = filesArg.length > 0 ? filesArg : undefined
   if (!chat_id || (!text && !files)) {
@@ -180,17 +287,22 @@ type PluginToDispatcher =
   | { type: 'reply'; session: string; msgId: string; chat_id: string; text: string; reply_to?: string; files?: string[] }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; msg: string }
   | { type: 'permission_request'; session: string; request_id: string; tool_name: string; description: string; input_preview: string }
+  | { type: 'bg_req'; req_id: string; session: string; op: 'spawn' | 'list' | 'kill' | 'tail'; name?: string; command?: string; args?: string[]; cwd?: string; id?: string; lines?: number }
 
 type DispatcherToPlugin =
   | { type: 'event'; session: string; chat_id: string; content: string; meta?: Record<string, string> }
   | { type: 'shutdown'; session: string }
   | { type: 'permission_verdict'; session: string; request_id: string; behavior: 'allow' | 'deny' }
+  | { type: 'bg_res'; req_id: string; ok: boolean; data?: unknown; error?: string }
 
 let sock: Socket | null = null
 let connected = false
 let recvBuf = ''
 let reconnectMs = 250
 const MAX_RECONNECT_MS = 5_000
+
+// Pending bg_req correlations: req_id → { resolve, reject }
+const pendingBgReqs = new Map<string, { resolve: (v: { ok: boolean; data?: unknown; error?: string }) => void; reject: (e: Error) => void }>()
 
 function sendFrame(f: PluginToDispatcher): boolean {
   if (!sock || !connected) return false
@@ -200,6 +312,30 @@ function sendFrame(f: PluginToDispatcher): boolean {
   } catch {
     return false
   }
+}
+
+/** Send a bg_req and await the dispatcher's bg_res. Rejects after 30s. */
+function sendBgReq(
+  op: 'spawn' | 'list' | 'kill' | 'tail',
+  extra: Partial<{ name: string; command: string; args: string[]; cwd: string; id: string; lines: number }>,
+): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+  const req_id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingBgReqs.delete(req_id)
+      reject(new Error('bg_req timed out after 30s'))
+    }, 30_000)
+    pendingBgReqs.set(req_id, {
+      resolve: v => { clearTimeout(timer); resolve(v) },
+      reject: e => { clearTimeout(timer); reject(e) },
+    })
+    const ok = sendFrame({ type: 'bg_req', req_id, session: SESSION_ID!, op, ...extra })
+    if (!ok) {
+      pendingBgReqs.delete(req_id)
+      clearTimeout(timer)
+      reject(new Error('dispatcher not reachable'))
+    }
+  })
 }
 
 function connectDispatcher(): void {
@@ -280,6 +416,14 @@ async function handleInbound(frame: DispatcherToPlugin): Promise<void> {
       method: 'notifications/claude/channel/permission',
       params: { request_id: frame.request_id, behavior: frame.behavior },
     })
+    return
+  }
+  if (frame.type === 'bg_res') {
+    const pending = pendingBgReqs.get(frame.req_id)
+    if (pending) {
+      pendingBgReqs.delete(frame.req_id)
+      pending.resolve({ ok: frame.ok, data: frame.data, error: frame.error })
+    }
     return
   }
   if (frame.type === 'shutdown') {

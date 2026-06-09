@@ -153,7 +153,7 @@ function isAlive(pid: number): boolean {
  * reuse — if `/proc/<pid>/cmdline` no longer names one of these, the PID was
  * recycled and we must not signal it.
  */
-const KNOWN_BINARIES = ["claude", "codex", "gemini", "aider", "opencode", "crush", "amp"];
+const KNOWN_BINARIES = ["claude", "codex", "agy", "gemini", "aider", "opencode", "crush", "amp"];
 
 async function verifyCmdline(pid: number): Promise<boolean> {
   try {

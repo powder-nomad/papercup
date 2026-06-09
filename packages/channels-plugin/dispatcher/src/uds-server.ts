@@ -17,6 +17,7 @@ import { dirname } from 'node:path'
 import type {
   PluginReply,
   PluginPermissionRequest,
+  PluginBgRequest,
   PluginToDispatcher,
   DispatcherToPlugin,
 } from './ipc.ts'
@@ -31,6 +32,7 @@ type ConnState = {
 export type UdsServerEvents = {
   reply: (frame: PluginReply) => void
   permissionRequest: (frame: PluginPermissionRequest) => void
+  bgRequest: (frame: PluginBgRequest) => void
   helloReceived: (session: string, pid: number) => void
   pluginDisconnected: (session: string) => void
 }
@@ -170,6 +172,14 @@ export class UdsServer extends EventEmitter {
     }
     if (frame.type === 'log') {
       this.log.log(frame.level, `plugin(${state.session}): ${frame.msg}`)
+      return
+    }
+    if (frame.type === 'bg_req') {
+      if (frame.session !== state.session) {
+        this.log.warn(`session spoof on bg_req: conn=${state.session}, frame=${frame.session}`)
+        return
+      }
+      this.emit('bgRequest', frame)
       return
     }
   }
