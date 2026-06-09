@@ -158,22 +158,47 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
       )
       return
     }
-    this.claude.spawn({
-      sessionId: cfg.sessionId,
-      pluginDir: this.init.pluginDir,
-      dispatcherSock: this.init.dispatcherSock,
-      papercupHome: this.init.papercupHome,
-      projectDir: this.init.projectDir,
-      cwd: cfg.cwd,
-      resume: cfg.resume,
-      model: cfg.model,
-      effort: cfg.effort,
-      permissionMode: cfg.permissionMode,
-      onTurnComplete: usage => {
-        this.emit('turnComplete', { sessionId: cfg.sessionId, usage })
-      },
-      onChannelReady: () => this.drainQueuedEvents(cfg.sessionId),
-    })
+    // spawnWith lets the resume-recovery path respawn the SAME session FRESH
+    // (resume:false) when a --resume spawn fails. onResumeFailed is only armed
+    // for resume spawns, so the fresh respawn can't recurse.
+    const spawnWith = (resume: boolean): void => {
+      this.claude.spawn({
+        sessionId: cfg.sessionId,
+        pluginDir: this.init.pluginDir,
+        dispatcherSock: this.init.dispatcherSock,
+        papercupHome: this.init.papercupHome,
+        projectDir: this.init.projectDir,
+        cwd: cfg.cwd,
+        resume,
+        model: cfg.model,
+        effort: cfg.effort,
+        permissionMode: cfg.permissionMode,
+        onTurnComplete: usage => {
+          this.emit('turnComplete', { sessionId: cfg.sessionId, usage })
+        },
+        onChannelReady: () => this.drainQueuedEvents(cfg.sessionId),
+        onResumeFailed: resume
+          ? () => {
+              // claude couldn't load the stored session. Clean up the dead
+              // child, tell the dispatcher (→ Discord notice), respawn fresh.
+              this.claude.kill(cfg.sessionId)
+              this.emit('contextLost', cfg.sessionId)
+              spawnWith(false)
+            }
+          : undefined,
+      })
+    }
+    spawnWith(cfg.resume)
+  }
+
+  /**
+   * Graceful idle-reap: SIGTERM claude so it flushes its transcript, then tear
+   * the tmux session down after a short window. Used by the dispatcher's reaper
+   * instead of cancel() so a reaped session's last events aren't lost. Bindings
+   * are kept — the next inbound message respawns via --resume.
+   */
+  reapGraceful(sessionId: string): void {
+    this.claude.gracefulKill(sessionId)
   }
 
   pushEvent(event: SessionEvent): boolean {

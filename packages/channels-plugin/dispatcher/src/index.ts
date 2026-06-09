@@ -246,6 +246,21 @@ async function main(): Promise<void> {
   // forked session.
   const autoCompactInFlight = new Set<string>()
 
+  // User-visible notice when a session starts fresh after losing its prior
+  // transcript (resume gate found none, or a --resume spawn failed). Posted to
+  // the bound channel so context loss is a clear signal, not a confusing reply.
+  const CONTEXT_LOST_NOTICE =
+    '⚠️ This session lost its prior conversation context on restart and is ' +
+    'starting fresh — the agent transcript could not be resumed. If you were ' +
+    "mid-task, re-share what you need and I'll pick it back up."
+
+  function alertContextLost(sessionId: string): void {
+    const s = sessions.findById(sessionId)
+    if (!s?.channelId) return
+    log.warn(`context-loss notice → channel ${s.channelId} (session=${s.name})`)
+    void discord.postNotice(s.channelId, CONTEXT_LOST_NOTICE)
+  }
+
   function spawnFor(session: Session): void {
     const transport = transportFor(session)
     if (transport.isAlive(session.id)) return
@@ -272,6 +287,7 @@ async function main(): Promise<void> {
         `session ${session.name} (${session.id}) marked resumable but no transcript at ` +
         `${claudeTranscriptPath(session.id, cwd)} — starting FRESH, prior context lost`,
       )
+      alertContextLost(session.id)
     }
     transport.ensureRunning({
       sessionId: session.id,
@@ -582,6 +598,7 @@ async function main(): Promise<void> {
     t.on('reply', onReply)
     t.on('permissionRequest', onPermissionRequest)
     t.on('turnComplete', onTurnComplete)
+    t.on('contextLost', sessionId => alertContextLost(sessionId))
     if (limitWatcher) t.on('reply', e => limitWatcher!.handleReply(e))
   }
 
@@ -809,7 +826,16 @@ async function main(): Promise<void> {
         continue
       }
       log.info(`reaper: killing idle session ${s.name} (${Math.floor(idle / 60_000)}m, transport=${s.transport})`)
-      killFor(s.id)
+      // Channels sessions get a graceful SIGTERM-then-teardown so claude flushes
+      // its transcript (the reaped session resumes on the next message). Other
+      // transports have no persisted child to flush — abrupt cancel is fine.
+      if (s.transport === 'channels') {
+        contextWarnTier.delete(s.id)
+        everSpawned.delete(s.id)
+        channelsTransport.reapGraceful(s.id)
+      } else {
+        killFor(s.id)
+      }
     }
   }, REAPER_INTERVAL_MS)
   reaperHandle.unref()

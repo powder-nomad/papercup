@@ -61,6 +61,10 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { makeLogger, type Logger } from './log.ts'
 
+/** How long to let claude flush its transcript after SIGTERM before the idle
+ *  reaper tears down the tmux session. */
+const GRACEFUL_FLUSH_MS = 1500
+
 export type ClaudeChildOpts = {
   sessionId: string
   pluginDir: string
@@ -88,6 +92,13 @@ export type ClaudeChildOpts = {
    * spawn, even if no dialogs needed answering.
    */
   onChannelReady?: () => void
+  /**
+   * Called when the bootstrap poller detects that a `--resume` spawn failed
+   * (claude printed "No conversation found with session ID" and exited). The
+   * transport responds by respawning the session FRESH with --session-id.
+   * Only meaningful when opts.resume is true.
+   */
+  onResumeFailed?: () => void
 }
 
 type Tracked = {
@@ -272,7 +283,7 @@ export class ClaudeChildManager {
         // by sending `1` + Enter ONLY if we detect the dialog text — guards
         // against accidentally injecting "1" as a user prompt for resumed
         // sessions where the dialog doesn't appear.
-        setTimeout(() => this.maybeAcceptTrustDialog(opts.sessionId, sessionName, opts.onChannelReady), 1500)
+        setTimeout(() => this.maybeAcceptTrustDialog(opts.sessionId, sessionName, opts.onChannelReady, opts.resume ? opts.onResumeFailed : undefined), 1500)
       } else {
         this.log.error(
           `tmux new-session failed (session=${opts.sessionId}, exit=${code}). stderr: ${stderrBuf.trim().slice(0, 500)}`,
@@ -296,6 +307,43 @@ export class ClaudeChildManager {
     }
     // Non-zero usually means the session already didn't exist (out-of-band kill).
     return false
+  }
+
+  /**
+   * Graceful variant of kill() for the idle reaper. SIGTERMs claude directly
+   * (so it flushes its transcript and exits cleanly) and tears the tmux
+   * session down after a short flush window, instead of the abrupt
+   * `tmux kill-session` SIGHUP. Untracks immediately so isAlive() reports dead
+   * during the flush window (no events get pushed to a session we're reaping).
+   * Fire-and-forget; returns at once.
+   */
+  gracefulKill(sessionId: string): void {
+    const t = this.tracked.get(sessionId)
+    if (!t) return
+    const { sessionName, papercupHome } = t
+    // Untrack now: a reaped session is idle, and we don't want isAlive() to
+    // report it alive while we wait for the flush.
+    this.tracked.delete(sessionId)
+    // The pane's process IS claude (tmux spawns `-- claude …` directly), so
+    // pane_pid is claude's pid. SIGTERM it to trigger a clean flush+exit.
+    const pidProbe = spawnSync('tmux', ['list-panes', '-t', sessionName, '-F', '#{pane_pid}'], {
+      encoding: 'utf8',
+      timeout: 2000,
+    })
+    const pid = pidProbe.status === 0
+      ? Number.parseInt((pidProbe.stdout.trim().split('\n')[0] ?? '').trim(), 10)
+      : NaN
+    if (Number.isFinite(pid)) {
+      try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
+      this.log.info(`graceful reap: SIGTERM claude pid=${pid} (session=${sessionId}); kill-session in ${GRACEFUL_FLUSH_MS}ms`)
+    } else {
+      this.log.warn(`graceful reap: no pane pid for ${sessionName}; falling back to delayed kill-session`)
+    }
+    setTimeout(() => {
+      spawnSync('tmux', ['kill-session', '-t', sessionName], { stdio: 'ignore' })
+      this.log.info(`tmux session killed after flush (session=${sessionId}, tmux=${sessionName})`)
+    }, GRACEFUL_FLUSH_MS)
+    this.deleteRuntimeMcpConfig(sessionId, papercupHome)
   }
 
   killAll(): void {
@@ -366,6 +414,7 @@ export class ClaudeChildManager {
     sessionId: string,
     sessionName: string,
     onChannelReady?: () => void,
+    onResumeFailed?: () => void,
   ): void {
     // Deadline raised from 10s to 15s and post-dialog grace from 1.5s to 5s
     // because the resume-from-summary picker (only fires on long-session
@@ -424,6 +473,19 @@ export class ClaudeChildManager {
       })
       if (cap.status === 0) {
         const out = cap.stdout
+        // Resume-failure detection: claude prints this and exits when
+        // --resume points at a session it can't load. Respawn fresh instead
+        // of leaving the channel wedged (plugin never connects, events queue
+        // forever). Only armed for resume spawns (onResumeFailed set).
+        if (onResumeFailed && /No conversation found with session ID/i.test(out)) {
+          this.log.warn(
+            `resume failed (session=${sessionId}): claude can't load the stored session — respawning fresh`,
+          )
+          try { onResumeFailed() } catch (err) {
+            this.log.warn(`onResumeFailed callback threw (session=${sessionId}):`, err)
+          }
+          return // stop polling; the fresh respawn starts its own poller
+        }
         for (const dialog of CLAUDE_BOOTSTRAP_DIALOGS) {
           if (dialog.match.every(s => out.includes(s))) {
             // De-dup: don't re-accept the same dialog within 2s — sometimes

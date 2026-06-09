@@ -112,6 +112,10 @@ export type SessionTransportEvents = {
   turnComplete: (e: TurnCompleteEvent) => void
   /** Process exited, expected or otherwise. Carries `code`/`signal` for logs. */
   sessionExited: (sessionId: string, code: number | null, signal: NodeJS.Signals | null) => void
+  /** A --resume spawn failed (claude couldn't load the session) and the
+   *  transport respawned it FRESH. Prior conversation context is lost. The
+   *  dispatcher posts a user-visible notice to the bound channel. */
+  contextLost: (sessionId: string) => void
 }
 
 /**
