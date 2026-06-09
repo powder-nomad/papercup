@@ -43,6 +43,30 @@ export type Session = {
   /** Underlying agent CLI/backend. "claude-code" is the only one shipped today;
    *  future per-turn backends (codex, gemini-cli, …) will register here. */
   backend: string
+  /**
+   * Working directory claude is spawned in for this session. New sessions get
+   * an isolated per-session dir (/tmp/papercup/<id>) so each session has its
+   * own claude project memory and can't see sibling sessions' scratch files.
+   * Legacy sessions created before this field default to the shared /tmp (see
+   * cwdFor) to preserve their existing on-disk transcript continuity.
+   */
+  cwd?: string
+  /**
+   * Set true once this session has produced at least one reply (so claude has
+   * written a transcript worth resuming). Drives --resume detection
+   * independently of claude's on-disk transcript path, which has changed
+   * across versions. Informational backstop to claudeSessionPersisted.
+   */
+  resumable?: boolean
+}
+
+/** Default cwd for sessions that predate the per-session-cwd field. */
+export const LEGACY_SHARED_CWD = '/tmp'
+
+/** Resolve the working directory for a session, defaulting legacy records to
+ *  the shared /tmp so their existing claude transcripts keep resolving. */
+export function cwdFor(s: Session): string {
+  return s.cwd ?? LEGACY_SHARED_CWD
 }
 
 const DEFAULT_TRANSPORT: SessionTransportName = 'channels'
@@ -124,6 +148,10 @@ export class SessionStore {
       lastActiveAt: now,
       transport: opts.transport ?? DEFAULT_TRANSPORT,
       backend: opts.backend ?? DEFAULT_BACKEND,
+      // Per-session isolated cwd: each session gets its own claude project dir
+      // (~/.claude/projects/-tmp-papercup-<id>/) so transcripts and project
+      // memory don't bleed across sessions sharing /tmp.
+      cwd: `/tmp/papercup/${id}`,
       ...(opts.channelId ? { channelId: opts.channelId } : {}),
     }
     this.sessions.push(session)
@@ -208,6 +236,15 @@ export class SessionStore {
     s.lastActiveAt = Date.now()
     await this.save()
     return s
+  }
+
+  /** Mark a session resumable (it has produced a reply → claude wrote a
+   *  transcript). Idempotent; no-op if already set. */
+  async markResumable(id: string): Promise<void> {
+    const s = this.sessions.find(s => s.id === id)
+    if (!s || s.resumable) return
+    s.resumable = true
+    await this.save()
   }
 
   async delete(id: string): Promise<boolean> {

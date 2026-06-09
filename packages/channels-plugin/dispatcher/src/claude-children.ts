@@ -67,6 +67,9 @@ export type ClaudeChildOpts = {
   dispatcherSock: string
   papercupHome: string
   projectDir?: string
+  /** Working directory for the claude child. Defaults to /tmp. Per-session
+   *  dirs isolate each session's claude project memory + scratch files. */
+  cwd?: string
   resume?: boolean
   model?: string
   effort?: string
@@ -225,6 +228,17 @@ export class ClaudeChildManager {
     // if (opts.projectDir) claudeArgs.push('--add-dir', opts.projectDir)
 
     const sessionName = tmuxSessionNameFor(opts.sessionId)
+    // Per-session cwd: isolates each session's claude project memory
+    // (~/.claude/projects/<encoded-cwd>/) and scratch files so sessions can't
+    // see each other's work. Defaults to /tmp for legacy sessions. Create it
+    // up front — tmux new-session -c fails if the dir doesn't exist.
+    const cwd = opts.cwd ?? '/tmp'
+    try {
+      if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true, mode: 0o700 })
+    } catch (err) {
+      this.log.warn(`failed to create session cwd ${cwd}, falling back to /tmp: ${(err as Error).message}`)
+    }
+    const effectiveCwd = existsSync(cwd) ? cwd : '/tmp'
     // tmux 3.0+ `-e KEY=VAL` sets env for the new session. Plugin reads
     // PAPERCUP_SESSION_ID / PAPERCUP_DISPATCHER_SOCK at startup.
     const tmuxArgs: string[] = [
@@ -233,7 +247,7 @@ export class ClaudeChildManager {
       '-x', '200', '-y', '50', // PTY dimensions; some claude UI needs sane defaults
       '-e', `PAPERCUP_SESSION_ID=${opts.sessionId}`,
       '-e', `PAPERCUP_DISPATCHER_SOCK=${opts.dispatcherSock}`,
-      '-c', '/tmp',
+      '-c', effectiveCwd,
       '--',
       'claude', ...claudeArgs,
     ]

@@ -131,6 +131,10 @@ export type SessionRuntimeConfig = {
   /** Has this sessionId been issued before? Drives --session-id vs --resume.
    *  Owned by the transport caller, not the transport. */
   resume: boolean
+  /** Working directory to spawn claude in. Defaults to /tmp when unset (legacy
+   *  sessions). New sessions pass an isolated per-session dir so transcripts and
+   *  project memory don't bleed across sessions. */
+  cwd?: string
 }
 
 /**

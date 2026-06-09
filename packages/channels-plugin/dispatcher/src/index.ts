@@ -23,7 +23,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DiscordChannelClient, type InboundMessage } from './discord.ts'
-import { SessionStore, type Session } from './state/sessions.ts'
+import { SessionStore, cwdFor, type Session } from './state/sessions.ts'
 import { GuildConfigStore } from './state/guild-config.ts'
 import { dispatchInteraction } from './commands/router.ts'
 import type { CommandContext } from './commands/types.ts'
@@ -76,14 +76,20 @@ type ChannelsTransportLike = {
   unbindChannel?: (sessionId: string) => void
 }
 
-// Cwd we always spawn claude with (see claude-children.ts `-c /tmp`).
-// Claude maps cwd → ~/.claude/projects/<encoded-cwd>/, replacing "/" with "-".
-const CLAUDE_PROJECT_CWD = '/tmp'
-const CLAUDE_PROJECT_DIR_NAME = '-' + CLAUDE_PROJECT_CWD.replace(/^\/+/, '').replace(/\//g, '-')
+// Claude maps a session's cwd → ~/.claude/projects/<encoded-cwd>/, replacing
+// the leading slash + every "/" with "-". Per-session cwds therefore land each
+// session's transcript in its own project dir; legacy sessions on /tmp share
+// the -tmp dir.
+function projectDirNameForCwd(cwd: string): string {
+  return '-' + cwd.replace(/^\/+/, '').replace(/\//g, '-')
+}
 
-function claudeSessionPersisted(sessionId: string): boolean {
-  const path = join(homedir(), '.claude', 'projects', CLAUDE_PROJECT_DIR_NAME, `${sessionId}.jsonl`)
-  return existsSync(path)
+function claudeTranscriptPath(sessionId: string, cwd: string): string {
+  return join(homedir(), '.claude', 'projects', projectDirNameForCwd(cwd), `${sessionId}.jsonl`)
+}
+
+function claudeSessionPersisted(sessionId: string, cwd: string): boolean {
+  return existsSync(claudeTranscriptPath(sessionId, cwd))
 }
 
 async function main(): Promise<void> {
@@ -255,7 +261,18 @@ async function main(): Promise<void> {
     // before disk flush; the second catches first-spawns after dispatcher
     // restart. AND-ing them was wrong — first-spawn of a persisted
     // session always failed, because everSpawned starts empty.
-    const resume = everSpawned.has(session.id) || claudeSessionPersisted(session.id)
+    const cwd = cwdFor(session)
+    const persisted = claudeSessionPersisted(session.id, cwd)
+    const resume = everSpawned.has(session.id) || persisted
+    // Visibility: a session we recorded as resumable whose transcript is gone
+    // means claude lost it (crash, abrupt kill before flush, version change).
+    // We start fresh — but log loudly so the context loss isn't silent.
+    if (!resume && session.resumable) {
+      log.warn(
+        `session ${session.name} (${session.id}) marked resumable but no transcript at ` +
+        `${claudeTranscriptPath(session.id, cwd)} — starting FRESH, prior context lost`,
+      )
+    }
     transport.ensureRunning({
       sessionId: session.id,
       backend: session.backend,
@@ -263,6 +280,7 @@ async function main(): Promise<void> {
       effort: session.effort,
       permissionMode: session.permissionMode,
       resume,
+      cwd,
     })
     everSpawned.add(session.id)
   }
@@ -361,6 +379,10 @@ async function main(): Promise<void> {
           `reply sent: session=${e.sessionId}, msgId=${e.msgId}, transport=${session.transport}, discord_ids=${ids.join(',')}${e.files?.length ? `, files=${e.files.length}` : ''}`,
         )
         void sessions.touch(e.sessionId)
+        // A reply means claude has written a resumable transcript for this
+        // session — record it so respawns prefer --resume even if claude's
+        // on-disk transcript path shifts across versions.
+        void sessions.markResumable(e.sessionId)
         // Cleanup the per-turn outbox only after Discord acknowledged the
         // upload — on failure we leave the dir so the user can inspect or
         // resend. Channels-mode replies never set outboxDir (claude passes
@@ -647,7 +669,7 @@ async function main(): Promise<void> {
 
   function scanOneSessionTranscript(s: Session): void {
     if (!s.channelId) return
-    const tpath = join(homedir(), '.claude', 'projects', CLAUDE_PROJECT_DIR_NAME, `${s.id}.jsonl`)
+    const tpath = claudeTranscriptPath(s.id, cwdFor(s))
     let bytes = 0
     try { bytes = statSync(tpath).size } catch { return }
     const estTokens = estimateTokensFromBytes(bytes)

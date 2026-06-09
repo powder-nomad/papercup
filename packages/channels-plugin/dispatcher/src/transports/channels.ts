@@ -164,6 +164,7 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
       dispatcherSock: this.init.dispatcherSock,
       papercupHome: this.init.papercupHome,
       projectDir: this.init.projectDir,
+      cwd: cfg.cwd,
       resume: cfg.resume,
       model: cfg.model,
       effort: cfg.effort,
