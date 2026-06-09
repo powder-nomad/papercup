@@ -22,3 +22,7 @@ models/*.bin
 # VitePress build output
 docs/.vitepress/dist/
 docs/.vitepress/cache/
+
+# Agent CLI runtime state created in the dispatcher cwd (agy/gemini/antigravity)
+packages/channels-plugin/dispatcher/cache/
+packages/channels-plugin/dispatcher/.antigravitycli/
