@@ -195,25 +195,46 @@ async function main(): Promise<void> {
   // venv / model files), voice stays unavailable but text + permission relay
   // keep working. /voice-join surfaces the error.
   // -------------------------------------------------------------------------
-  const stt = await bootWhisperSidecar()
+  // Voice sidecars are LAZY. The Whisper STT sidecar (~190 MB) and the TTS
+  // engine (~450 MB) used to boot eagerly here, which spiked memory at startup
+  // and contributed to OOM kills when several channels sessions resumed at
+  // once. Voice is only needed once the bot actually joins a Discord voice
+  // channel, so ensureVoice() boots the sidecars on the first /voice-join (or
+  // /pickup) and memoizes the result. Failed boots leave `voice` undefined and
+  // are retried on the next join. The `voice` binding stays a `let` so the
+  // closures that read it (reply TTS path, reaper, shutdown) see the live
+  // value once it's populated.
+  let stt: Awaited<ReturnType<typeof bootWhisperSidecar>> = null
   let tts: TtsEngine | null = null
   let voice: VoiceService | undefined
-  if (stt) {
+  let voiceBootPromise: Promise<VoiceService | undefined> | undefined
+  async function ensureVoice(): Promise<VoiceService | undefined> {
+    if (voice) return voice
+    if (voiceBootPromise) return voiceBootPromise
+    voiceBootPromise = (async () => {
+      log.info('voice: booting STT/TTS sidecars on first voice-channel join')
+      stt = await bootWhisperSidecar()
+      if (!stt) return undefined
+      try {
+        tts = createTts(TTS_ENGINE)
+        await tts.start()
+        log.info(`tts engine "${TTS_ENGINE}" online`)
+      } catch (err) {
+        log.warn(`tts engine "${TTS_ENGINE}" failed to start; voice unavailable. err:`, err)
+        try { stt.stop() } catch { /* best-effort */ }
+        stt = null
+        tts = null
+        return undefined
+      }
+      voice = new VoiceService({ stt, tts, onUtterance: handleVoiceUtterance })
+      return voice
+    })()
     try {
-      tts = createTts(TTS_ENGINE)
-      await tts.start()
-      log.info(`tts engine "${TTS_ENGINE}" online`)
-    } catch (err) {
-      log.warn(`tts engine "${TTS_ENGINE}" failed to start; voice replies will be text-only. err:`, err)
-      tts = null
+      return await voiceBootPromise
+    } finally {
+      // Clear the memo on failure so the next /voice-join retries the boot.
+      if (!voice) voiceBootPromise = undefined
     }
-  }
-  if (stt && tts) {
-    voice = new VoiceService({
-      stt,
-      tts,
-      onUtterance: handleVoiceUtterance,
-    })
   }
 
   // Sessions we've already issued `--session-id` for during this dispatcher
@@ -263,10 +284,17 @@ async function main(): Promise<void> {
 
   function spawnFor(session: Session): void {
     const transport = transportFor(session)
-    if (transport.isAlive(session.id)) return
+    // Bind the channel BEFORE the liveness check. On dispatcher restart the
+    // channels transport adopts the still-running orphan tmux session, so
+    // isAlive() is already true and we'd return early — leaving the channel
+    // unbound. An unbound channels session has no entry in sessionChannelIds,
+    // so every reply claude sends back is dropped with "expected=undefined"
+    // (claude thinks it replied; the user gets nothing). bindChannel is an
+    // idempotent Map.set, safe to call whether or not the child is alive.
     if (session.channelId) {
       ;(transport as unknown as ChannelsTransportLike).bindChannel?.(session.id, session.channelId)
     }
+    if (transport.isAlive(session.id)) return
     contextWarnTier.delete(session.id)
     // Resume when EITHER (a) we've spawned this session before in this
     // process (so a re-spawn with --session-id would collide with the
@@ -282,7 +310,16 @@ async function main(): Promise<void> {
     // Visibility: a session we recorded as resumable whose transcript is gone
     // means claude lost it (crash, abrupt kill before flush, version change).
     // We start fresh — but log loudly so the context loss isn't silent.
-    if (!resume && session.resumable) {
+    //
+    // CHANNELS ONLY. claudeSessionPersisted() looks for a claude `.jsonl`
+    // transcript, which never exists for per-turn backends (agy keeps its own
+    // conversation via --conversation, gemini/codex have their own stores).
+    // For per-turn, `persisted` is permanently false, so after the idle reaper
+    // clears everSpawned this branch would fire a bogus "context lost" alert on
+    // every subsequent turn. Per-turn backends own their own resume semantics —
+    // the dispatcher's resume flag is vestigial there — so we never second-guess
+    // them here.
+    if (session.transport === 'channels' && !resume && session.resumable) {
       log.warn(
         `session ${session.name} (${session.id}) marked resumable but no transcript at ` +
         `${claudeTranscriptPath(session.id, cwd)} — starting FRESH, prior context lost`,
@@ -639,7 +676,10 @@ async function main(): Promise<void> {
       if (!s || s.transport !== 'channels') return false
       return channelsTransport.sendNativeCompact(id)
     },
-    voice,
+    // Getter so handlers see the live `voice` value after lazy boot, not the
+    // (undefined) snapshot from when cmdCtx was constructed.
+    get voice() { return voice },
+    ensureVoice,
     scheduler,
     schedulerAcl,
     schedulerAllowlist,

@@ -531,6 +531,8 @@ export async function handleVoiceJoin(
 ): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
+  // Boot the voice sidecars on demand — they're not started at dispatcher boot.
+  await ctx.ensureVoice?.()
   if (!ctx.voice) {
     await interaction.editReply(t(interaction.locale, 'voice.unavailable'))
     return
@@ -861,6 +863,8 @@ export async function handlePickup(
 ): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral })
 
+  // Boot the voice sidecars on demand — they're not started at dispatcher boot.
+  await ctx.ensureVoice?.()
   if (!ctx.voice) {
     await interaction.editReply(t(interaction.locale, 'voice.unavailable'))
     return

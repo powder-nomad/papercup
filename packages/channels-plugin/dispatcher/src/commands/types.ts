@@ -80,10 +80,19 @@ export type CommandContext = {
    */
   nativeCompactForChannelsSession: (sessionId: string) => boolean
   /**
-   * Voice subsystem. Undefined if the Whisper sidecar failed to boot — voice
-   * slash commands return a "voice unavailable" error in that case.
+   * Voice subsystem. Undefined until lazily booted (see ensureVoice) or if the
+   * Whisper sidecar failed to boot — voice slash commands return a "voice
+   * unavailable" error in that case.
    */
   voice?: VoiceService
+  /**
+   * Lazily boot the voice subsystem (Whisper STT + TTS sidecars, ~640 MB) and
+   * return it. Voice is NOT started at dispatcher boot to save memory; the
+   * voice-channel-join handlers (/voice-join, /pickup) call this first, then
+   * read `voice`. Memoized — repeat calls return the running instance. Resolves
+   * undefined if the sidecars can't start.
+   */
+  ensureVoice?: () => Promise<VoiceService | undefined>
   /**
    * Scheduler subsystem (F1 — cron + queue). Undefined when scheduler init
    * fails or is intentionally disabled. /cron, /queue, /scheduler handlers
