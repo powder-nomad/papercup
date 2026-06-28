@@ -80,10 +80,13 @@ tokens/streaming aren't possible through that interface.
 ³ opencode's `--format json` token usage + resume are now implemented and
 verified (qwen3-14b); but the stream is **buffered** (flushed at turn end, not
 line-by-line), so live `TurnEvent` streaming isn't possible via `run` — it'd
-need `opencode serve` + SSE. NOTE: opencode's agent loop is tool-heavy; small
-models (≤4B, e.g. gemma4-e4b) stall and never complete a turn — set
-`OPENCODE_DEFAULT_MODEL` to a capable tool-caller (gemma4-12b and qwen3-14b
-both verified end-to-end; gemma4-e4b fails).
+need `opencode serve` + SSE. Models: gemma4-e4b, gemma4-12b, and qwen3-14b all
+verified completing opencode turns end-to-end (e4b ~8s/turn). Bigger models are
+preferable for complex multi-step tool orchestration, but e4b is usable.
+Pitfalls that look like "the model stalled": (1) `OPENCODE_DEFAULT_MODEL` /
+`--model` naming a model ollama doesn't have — opencode hangs on a request that
+never resolves; (2) a cold first load of a large-context model. Neither is an
+e4b limitation.
 ⁴ opencode is wired to the papercup bun MCP plugin (`server.ts`) via a
 per-session `OPENCODE_CONFIG` (`writePapercupMcpConfig`), giving it the
 background-process tools (`spawn_bg`/`list_bg`/`kill_bg`/`tail_bg`) routed to

@@ -14,11 +14,13 @@ import type { AgentReply, RespondOptions } from "./registry.ts";
  *                            PATH (the installer drops it at ~/.opencode/bin/opencode,
  *                            which is NOT on PATH by default).
  *   OPENCODE_WORKDIR       — working directory override (else opts.cwd)
- *   OPENCODE_DEFAULT_MODEL — fallback model, "provider/model" (e.g. ollama/qwen3-14b).
- *                            NOTE: opencode's agent loop is tool-heavy; small models
- *                            (≤4B, e.g. gemma4-e4b) stall/loop and never complete a
- *                            turn. Use a capable tool-calling model (gemma4-12b and
- *                            qwen3-14b both verified; gemma4-e4b fails).
+  *   OPENCODE_DEFAULT_MODEL — fallback model, "provider/model" (e.g. ollama/gemma4-e4b).
+ *                            gemma4-e4b / gemma4-12b / qwen3-14b all verified
+ *                            completing turns end-to-end (e4b ~8s/turn); bigger
+ *                            models are better for complex tool orchestration.
+ *                            A hang usually means the model name isn't installed
+ *                            in ollama (opencode waits forever) or a cold load —
+ *                            not a model-capability limit.
  *   OPENCODE_EXTRA_ARGS    — extra CLI flags appended to every invocation
  *
  * Resume (verified Jun 2026): opencode generates its OWN `ses_…` ids and ignores
