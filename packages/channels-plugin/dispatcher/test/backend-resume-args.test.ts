@@ -146,17 +146,14 @@ function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T):
   }
 }
 
-test('writePapercupMcpConfig is opt-in: returns undefined by default (unset or !=1)', () => {
-  withEnv({ PAPERCUP_OPENCODE_MCP: undefined }, () => {
-    assert.equal(writePapercupMcpConfig('sess-1'), undefined)
-  })
+test('writePapercupMcpConfig is opt-out: returns undefined only when PAPERCUP_OPENCODE_MCP=0', () => {
   withEnv({ PAPERCUP_OPENCODE_MCP: '0' }, () => {
     assert.equal(writePapercupMcpConfig('sess-1'), undefined)
   })
 })
 
-test('writePapercupMcpConfig returns undefined when plugin server.ts is missing (even if opted in)', () => {
-  withEnv({ PAPERCUP_OPENCODE_MCP: '1', PAPERCUP_PLUGIN_DIR: '/nonexistent/plugin' }, () => {
+test('writePapercupMcpConfig returns undefined when plugin server.ts is missing', () => {
+  withEnv({ PAPERCUP_OPENCODE_MCP: undefined, PAPERCUP_PLUGIN_DIR: '/nonexistent/plugin' }, () => {
     assert.equal(writePapercupMcpConfig('sess-1'), undefined)
   })
 })

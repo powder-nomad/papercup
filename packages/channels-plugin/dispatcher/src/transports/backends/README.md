@@ -88,11 +88,10 @@ both verified end-to-end; gemma4-e4b fails).
 per-session `OPENCODE_CONFIG` (`writePapercupMcpConfig`), giving it the
 background-process tools (`spawn_bg`/`list_bg`/`kill_bg`/`tail_bg`) routed to
 the dispatcher by `PAPERCUP_SESSION_ID` over the shared UDS — verified
-end-to-end. **OPT-IN (default off): `PAPERCUP_OPENCODE_MCP=1`** — disabled by
-default because opencode-spawned plugins can orphan (stdin-close shutdown
-doesn't fire under opencode) and leak memory via a no-backoff reconnect loop,
-OOM-ing a no-swap host. Re-enable once the plugin gains an orphan self-exit
-guard. Caveats: the plugin's
+end-to-end. **Default on; opt out with `PAPERCUP_OPENCODE_MCP=0`.** (Earlier,
+opencode-spawned plugins could orphan and leak to OOM; `plugin/server.ts` now
+has an orphan self-exit guard + reconnect backoff that prevent that, so it's
+safe on by default.) Caveats: the plugin's
 `reply` tool is a no-op for per-turn sessions (the channels transport drops
 replies for sessions it doesn't own); `present_options`/`spawn_extension` are
 NOT in this plugin (they belonged to the dormant `PAPERCUP_MCP_URL` HTTP

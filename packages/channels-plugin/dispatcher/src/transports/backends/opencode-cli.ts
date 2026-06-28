@@ -192,12 +192,11 @@ export function parseOpencodeStream(stdout: string): OpencodeParseResult {
  *  present_options/spawn_extension are NOT part of this plugin. */
 export function writePapercupMcpConfig(sessionId: string | undefined): string | undefined {
   if (!sessionId) return undefined;
-  // OPT-IN (default off). opencode-spawned bun plugins can orphan (their
-  // stdin-close shutdown doesn't fire reliably under opencode) and then leak
-  // memory via a no-backoff reconnect loop, OOM-ing a no-swap host. Disabled
-  // by default until the plugin gains an orphan self-exit guard; enable with
-  // PAPERCUP_OPENCODE_MCP=1 once that lands.
-  if (process.env.PAPERCUP_OPENCODE_MCP !== "1") return undefined;
+  // Default ON; opt out with PAPERCUP_OPENCODE_MCP=0. (Was temporarily opt-in
+  // after opencode-spawned plugins orphaned + leaked to OOM; the plugin now has
+  // an orphan self-exit guard + reconnect backoff that prevent that — see
+  // plugin/server.ts — so it's safe on by default again.)
+  if (process.env.PAPERCUP_OPENCODE_MCP === "0") return undefined;
 
   const here = dirname(fileURLToPath(import.meta.url));
   // backends -> transports -> src -> dispatcher -> channels-plugin, then /plugin
