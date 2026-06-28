@@ -62,6 +62,18 @@ export abstract class BaseCliBackend implements AgentBackend {
     return this.sessionId;
   }
 
+  /**
+   * Resolve the working directory for a spawn. Prefers the dispatcher-assigned
+   * per-session cwd (opts.cwd = /tmp/papercup/<id>), then the backend's own
+   * `*_WORKDIR` env, then process.cwd() as a last resort. Spawning in the
+   * isolated per-session cwd is what lets cwd-keyed CLIs (antigravity, opencode,
+   * aider) resume the right conversation and keeps agents out of the
+   * dispatcher's own source tree.
+   */
+  protected resolveCwd(envWorkdir?: string): string {
+    return resolveBackendCwd(this.opts.cwd, envWorkdir);
+  }
+
   abstract respond(userText: string, opts?: RespondOptions): Promise<AgentReply>;
 
   /**
@@ -167,4 +179,13 @@ export abstract class BaseCliBackend implements AgentBackend {
       try { proc.kill("SIGTERM"); } catch { /* already dead */ }
     }
   }
+}
+
+/** Cwd precedence for CLI backends: per-session opts.cwd > `*_WORKDIR` env >
+ *  process.cwd(). Pure + exported for unit testing. */
+export function resolveBackendCwd(
+  optsCwd: string | undefined,
+  envWorkdir: string | undefined,
+): string {
+  return optsCwd ?? envWorkdir ?? process.cwd();
 }

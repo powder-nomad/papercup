@@ -26,7 +26,7 @@ import type { AgentReply, RespondOptions } from "./registry.ts";
 export class OpencodeCliBackend extends BaseCliBackend {
   async respond(userText: string, _respondOpts: RespondOptions = {}): Promise<AgentReply> {
     const binary = process.env.OPENCODE_BINARY ?? "opencode";
-    const cwd = this.opts.cwd ?? process.env.OPENCODE_WORKDIR ?? process.cwd();
+    const cwd = this.resolveCwd(process.env.OPENCODE_WORKDIR);
     const model = this.opts.model ?? process.env.OPENCODE_DEFAULT_MODEL;
     const extra = (process.env.OPENCODE_EXTRA_ARGS ?? "")
       .split(/\s+/)

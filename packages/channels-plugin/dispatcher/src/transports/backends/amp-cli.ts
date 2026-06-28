@@ -25,7 +25,7 @@ import type { AgentReply, RespondOptions } from "./registry.ts";
 export class AmpCliBackend extends BaseCliBackend {
   async respond(userText: string, _respondOpts: RespondOptions = {}): Promise<AgentReply> {
     const binary = process.env.AMP_BINARY ?? "amp";
-    const cwd = process.env.AMP_WORKDIR ?? process.cwd();
+    const cwd = this.resolveCwd(process.env.AMP_WORKDIR);
     const model = this.opts.model ?? process.env.AMP_DEFAULT_MODEL;
     const thread = process.env.AMP_THREAD;
     const extra = (process.env.AMP_EXTRA_ARGS ?? "")

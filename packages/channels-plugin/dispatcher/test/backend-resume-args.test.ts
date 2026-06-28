@@ -3,6 +3,21 @@ import assert from 'node:assert/strict'
 
 import { buildAntigravityArgs } from '../src/transports/backends/antigravity-cli.ts'
 import { buildOpencodeArgs } from '../src/transports/backends/opencode-cli.ts'
+import { resolveBackendCwd } from '../src/transports/backends/base-cli.ts'
+
+/* ----------------------------- cwd precedence ----------------------------- */
+
+test('resolveBackendCwd prefers per-session opts.cwd over env and process.cwd', () => {
+  assert.equal(resolveBackendCwd('/tmp/papercup/abc', '/work'), '/tmp/papercup/abc')
+})
+
+test('resolveBackendCwd falls back to *_WORKDIR env when no opts.cwd', () => {
+  assert.equal(resolveBackendCwd(undefined, '/work'), '/work')
+})
+
+test('resolveBackendCwd falls back to process.cwd() when nothing set', () => {
+  assert.equal(resolveBackendCwd(undefined, undefined), process.cwd())
+})
 
 /* --------------------------- antigravity (agy) --------------------------- */
 

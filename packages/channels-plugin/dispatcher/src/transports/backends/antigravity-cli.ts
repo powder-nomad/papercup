@@ -35,7 +35,7 @@ export class AntigravityCliBackend extends BaseCliBackend {
   }
 
   private cwdFor(): string {
-    return this.opts.cwd ?? process.env.ANTIGRAVITY_WORKDIR ?? process.cwd();
+    return this.resolveCwd(process.env.ANTIGRAVITY_WORKDIR);
   }
 
   async respond(userText: string, respondOpts: RespondOptions = {}): Promise<AgentReply> {

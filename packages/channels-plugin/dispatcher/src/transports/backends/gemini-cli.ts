@@ -27,7 +27,7 @@ export class GeminiCliBackend extends BaseCliBackend {
     if (!this.sessionId) throw new Error("GeminiCliBackend: start() not called");
 
     const binary = process.env.GEMINI_BINARY ?? "gemini";
-    const cwd = process.env.GEMINI_WORKDIR ?? process.cwd();
+    const cwd = this.resolveCwd(process.env.GEMINI_WORKDIR);
     const model = this.opts.model ?? process.env.GEMINI_DEFAULT_MODEL;
     const extra = (process.env.GEMINI_EXTRA_ARGS ?? "")
       .split(/\s+/)

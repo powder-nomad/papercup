@@ -25,7 +25,7 @@ import type { AgentReply, RespondOptions } from "./registry.ts";
 export class CrushCliBackend extends BaseCliBackend {
   async respond(userText: string, _respondOpts: RespondOptions = {}): Promise<AgentReply> {
     const binary = process.env.CRUSH_BINARY ?? "crush";
-    const cwd = process.env.CRUSH_WORKDIR ?? process.cwd();
+    const cwd = this.resolveCwd(process.env.CRUSH_WORKDIR);
     const model = this.opts.model ?? process.env.CRUSH_DEFAULT_MODEL;
     const yolo = process.env.CRUSH_YOLO === "true";
     const extra = (process.env.CRUSH_EXTRA_ARGS ?? "")

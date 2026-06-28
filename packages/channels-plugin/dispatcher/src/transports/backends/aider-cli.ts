@@ -22,7 +22,7 @@ import type { AgentReply, RespondOptions } from "./registry.ts";
 export class AiderBackend extends BaseCliBackend {
   async respond(userText: string, _respondOpts: RespondOptions = {}): Promise<AgentReply> {
     const binary = process.env.AIDER_BINARY ?? "aider";
-    const cwd = process.env.AIDER_WORKDIR ?? process.cwd();
+    const cwd = this.resolveCwd(process.env.AIDER_WORKDIR);
     const extra = (process.env.AIDER_EXTRA_ARGS ?? "")
       .split(/\s+/)
       .filter(Boolean);
