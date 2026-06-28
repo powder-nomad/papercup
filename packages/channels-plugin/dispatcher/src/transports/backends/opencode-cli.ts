@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -82,20 +82,53 @@ export class OpencodeCliBackend extends BaseCliBackend {
     const mcpConfig = this.mcpConfigPath ?? (this.mcpConfigPath = writePapercupMcpConfig(this.sessionId));
     const env = mcpConfig ? { OPENCODE_CONFIG: mcpConfig } : undefined;
 
-    const { stdout, elapsedMs } = await this.runChild({ binary, args, cwd, userText, env });
+    try {
+      const { stdout, elapsedMs } = await this.runChild({ binary, args, cwd, userText, env });
 
-    const parsed = parseOpencodeStream(stdout);
-    if (parsed.sessionId) this.opencodeSessionId = parsed.sessionId;
-    this.firstTurn = false;
+      const parsed = parseOpencodeStream(stdout);
+      if (parsed.sessionId) this.opencodeSessionId = parsed.sessionId;
+      this.firstTurn = false;
 
-    return {
-      // Fall back to raw stdout only if no text parts were found (older/unknown
-      // event shape) so the user still sees *something*.
-      text: parsed.text || stdout.trim(),
-      inputTokens: parsed.inputTokens,
-      outputTokens: parsed.outputTokens,
-      elapsedMs,
-    };
+      return {
+        // Fall back to raw stdout only if no text parts were found (older/unknown
+        // event shape) so the user still sees *something*.
+        text: parsed.text || stdout.trim(),
+        inputTokens: parsed.inputTokens,
+        outputTokens: parsed.outputTokens,
+        elapsedMs,
+      };
+    } finally {
+      // The turn is over and opencode has exited — but opencode spawns the
+      // papercup MCP plugin in its OWN process group, so it survives opencode's
+      // exit AND escapes base-cli's group-sweep. Under bun it then busy-loops on
+      // the half-closed stdin (~100% CPU), starving its own in-process guards
+      // (stdin-close, orphan watchdog) and leaking to OOM. Reap it externally,
+      // by session id, with SIGKILL (SIGTERM can't be processed by a pegged
+      // event loop). Scoped to THIS session, so it never touches other sessions
+      // or the channels claude plugins.
+      reapOrphanPlugins(this.sessionId);
+    }
+  }
+}
+
+/** SIGKILL any `bun … server.ts` papercup MCP plugin whose environment carries
+ *  the given PAPERCUP_SESSION_ID. Used to reap opencode's orphaned plugin after
+ *  a turn (see respond()). Linux /proc based; best-effort and self-scoped. */
+function reapOrphanPlugins(sessionId: string | undefined): void {
+  if (!sessionId) return;
+  const marker = `PAPERCUP_SESSION_ID=${sessionId}`;
+  let entries: string[];
+  try { entries = readdirSync("/proc"); } catch { return; }
+  for (const pid of entries) {
+    if (!/^\d+$/.test(pid)) continue;
+    if (pid === String(process.pid)) continue;
+    try {
+      const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      if (!cmdline.includes("server.ts")) continue;
+      const environ = readFileSync(`/proc/${pid}/environ`, "utf8");
+      if (!environ.split("\0").includes(marker)) continue;
+      process.kill(Number(pid), "SIGKILL");
+    } catch { /* process vanished or unreadable — fine */ }
   }
 }
 

@@ -158,6 +158,14 @@ export abstract class BaseCliBackend implements AgentBackend {
       }
     }).finally(() => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      // Sweep stragglers the CLI left in its process group after it exits —
+      // notably opencode's MCP plugin subprocess, which otherwise orphans and
+      // leaks (multi-GB reconnect loop -> OOM on a no-swap host). `proc` is a
+      // detached group leader; the leader is dead by now, so SIGTERMing the
+      // group only hits leftover descendants. Background processes started via
+      // the dispatcher's processManager are NOT in this group, so they survive.
+      // Best-effort; ESRCH (empty group) is swallowed by killProcessGroup.
+      this.killProcessGroup(proc);
       this.inFlight = undefined;
       if (childPid) void processRegistry.unregister(childPid);
     });
