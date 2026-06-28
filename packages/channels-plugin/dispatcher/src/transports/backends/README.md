@@ -69,7 +69,7 @@ surface (stream-json, MCP, `--add-dir`, partial messages) is deeper.
 |---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
 | Multi-turn resume | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ⚠️ | ❌ |
 | Resume recovery | ✅ | ✅ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ❌ |
-| Token usage | ✅ | ✅ | ❌² | ❌³ | ✅ | ❌ | ❌ | ❌ |
+| Token usage | ✅ | ✅ | ❌² | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Live streaming | ✅ | ❌ | ❌² | ❌³ | ❌ | ❌ | ❌ | ❌ |
 | Papercup MCP tools⁴ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Outbox attachments | ✅ | ❌ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ❌ |
@@ -77,9 +77,12 @@ surface (stream-json, MCP, `--add-dir`, partial messages) is deeper.
 
 ² agy `-p` emits **plain text** — no token stats and no incremental output, so
 tokens/streaming aren't possible through that interface.
-³ opencode emits a `--format json` event stream; token extraction + streaming
-are implementable but need a working model to observe the schema (the local
-ollama/gemma4 default is 4096-ctx and times out emitting nothing).
+³ opencode's `--format json` token usage + resume are now implemented and
+verified (qwen3-14b); but the stream is **buffered** (flushed at turn end, not
+line-by-line), so live `TurnEvent` streaming isn't possible via `run` — it'd
+need `opencode serve` + SSE. NOTE: opencode's agent loop is tool-heavy; small
+models (≤4B, e.g. gemma4-e4b) stall and never complete a turn — set
+`OPENCODE_DEFAULT_MODEL` to a capable tool-caller (qwen3-14b verified).
 ⁴ `present_options` (interactive Discord buttons), `spawn_extension`, etc. —
 require wiring each CLI's MCP config to the papercup MCP server.
 

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { buildAntigravityArgs } from '../src/transports/backends/antigravity-cli.ts'
-import { buildOpencodeArgs, resolveOpencodeBinary } from '../src/transports/backends/opencode-cli.ts'
+import { buildOpencodeArgs, resolveOpencodeBinary, parseOpencodeStream } from '../src/transports/backends/opencode-cli.ts'
 import { resolveBackendCwd } from '../src/transports/backends/base-cli.ts'
 
 /* ----------------------------- cwd precedence ----------------------------- */
@@ -80,10 +80,52 @@ test('opencode first turn does NOT pass --continue and never a caller --session'
   assert.equal(args[args.length - 1], 'hi', 'prompt is the trailing positional')
 })
 
-test('opencode follow-up turn passes --continue', () => {
+test('opencode follow-up turn passes --continue when no real session id captured yet', () => {
   const args = buildOpencodeArgs({ userText: 'more', extra: [], resume: true })
   assert.ok(args.includes('--continue'))
   assert.ok(!args.includes('--session'))
+})
+
+test('opencode prefers a captured real --session id over --continue', () => {
+  const args = buildOpencodeArgs({ userText: 'more', extra: [], resume: true, sessionId: 'ses_ABC' })
+  const i = args.indexOf('--session')
+  assert.notEqual(i, -1)
+  assert.equal(args[i + 1], 'ses_ABC')
+  assert.ok(!args.includes('--continue'), 'real session id supersedes --continue')
+})
+
+/* --------------------- opencode --format json parsing --------------------- */
+
+test('parseOpencodeStream extracts text, session id, and tokens (real event shape)', () => {
+  const stream = [
+    JSON.stringify({ type: 'step_start', sessionID: 'ses_X', part: { type: 'step-start' } }),
+    JSON.stringify({ type: 'text', sessionID: 'ses_X', part: { type: 'text', text: 'PROBE-OK' } }),
+    JSON.stringify({ type: 'step_finish', sessionID: 'ses_X', part: { reason: 'stop', tokens: { input: 7093, output: 134 } } }),
+  ].join('\n')
+  const r = parseOpencodeStream(stream)
+  assert.equal(r.text, 'PROBE-OK')
+  assert.equal(r.sessionId, 'ses_X')
+  assert.equal(r.inputTokens, 7093)
+  assert.equal(r.outputTokens, 134)
+})
+
+test('parseOpencodeStream concatenates multiple text parts and sums step tokens', () => {
+  const stream = [
+    JSON.stringify({ type: 'text', sessionID: 'ses_Y', part: { text: 'Hello ' } }),
+    JSON.stringify({ type: 'text', sessionID: 'ses_Y', part: { text: 'world' } }),
+    JSON.stringify({ type: 'step_finish', sessionID: 'ses_Y', part: { tokens: { input: 10, output: 2 } } }),
+    JSON.stringify({ type: 'step_finish', sessionID: 'ses_Y', part: { tokens: { input: 5, output: 3 } } }),
+  ].join('\n')
+  const r = parseOpencodeStream(stream)
+  assert.equal(r.text, 'Hello world')
+  assert.equal(r.inputTokens, 15)
+  assert.equal(r.outputTokens, 5)
+})
+
+test('parseOpencodeStream tolerates non-json/blank lines', () => {
+  const r = parseOpencodeStream('\nnot json\n' + JSON.stringify({ type: 'text', sessionID: 's', part: { text: 'ok' } }) + '\n')
+  assert.equal(r.text, 'ok')
+  assert.equal(r.sessionId, 's')
 })
 
 test('resolveOpencodeBinary honors OPENCODE_BINARY env first', () => {
