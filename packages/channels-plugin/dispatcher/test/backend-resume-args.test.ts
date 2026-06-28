@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { buildAntigravityArgs } from '../src/transports/backends/antigravity-cli.ts'
-import { buildOpencodeArgs } from '../src/transports/backends/opencode-cli.ts'
+import { buildOpencodeArgs, resolveOpencodeBinary } from '../src/transports/backends/opencode-cli.ts'
 import { resolveBackendCwd } from '../src/transports/backends/base-cli.ts'
 
 /* ----------------------------- cwd precedence ----------------------------- */
@@ -84,6 +84,21 @@ test('opencode follow-up turn passes --continue', () => {
   const args = buildOpencodeArgs({ userText: 'more', extra: [], resume: true })
   assert.ok(args.includes('--continue'))
   assert.ok(!args.includes('--session'))
+})
+
+test('resolveOpencodeBinary honors OPENCODE_BINARY env first', () => {
+  assert.equal(resolveOpencodeBinary('/custom/opencode', '/home/x', () => true), '/custom/opencode')
+})
+
+test('resolveOpencodeBinary falls back to ~/.opencode/bin/opencode when it exists', () => {
+  assert.equal(
+    resolveOpencodeBinary(undefined, '/home/x', (p) => p === '/home/x/.opencode/bin/opencode'),
+    '/home/x/.opencode/bin/opencode',
+  )
+})
+
+test('resolveOpencodeBinary falls back to bare "opencode" (PATH) when install path absent', () => {
+  assert.equal(resolveOpencodeBinary(undefined, '/home/x', () => false), 'opencode')
 })
 
 test('opencode passes model and json format', () => {

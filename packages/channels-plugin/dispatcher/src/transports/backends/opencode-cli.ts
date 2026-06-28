@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { BaseCliBackend } from "./base-cli.ts";
 import type { AgentReply, RespondOptions } from "./registry.ts";
 
@@ -25,7 +28,7 @@ import type { AgentReply, RespondOptions } from "./registry.ts";
  */
 export class OpencodeCliBackend extends BaseCliBackend {
   async respond(userText: string, _respondOpts: RespondOptions = {}): Promise<AgentReply> {
-    const binary = process.env.OPENCODE_BINARY ?? "opencode";
+    const binary = resolveOpencodeBinary(process.env.OPENCODE_BINARY);
     const cwd = this.resolveCwd(process.env.OPENCODE_WORKDIR);
     const model = this.opts.model ?? process.env.OPENCODE_DEFAULT_MODEL;
     const extra = (process.env.OPENCODE_EXTRA_ARGS ?? "")
@@ -72,6 +75,22 @@ export class OpencodeCliBackend extends BaseCliBackend {
       elapsedMs,
     };
   }
+}
+
+/** Resolve the opencode binary. The installer drops it at ~/.opencode/bin/opencode,
+ *  which is NOT on PATH by default — so a bare "opencode" spawn ENOENTs in
+ *  production. Precedence: OPENCODE_BINARY env > standard install path (if it
+ *  exists) > bare "opencode" (rely on PATH). `homeDir`/`exists` are injectable
+ *  for unit testing. */
+export function resolveOpencodeBinary(
+  envBinary?: string,
+  homeDir: string = homedir(),
+  exists: (p: string) => boolean = existsSync,
+): string {
+  if (envBinary) return envBinary;
+  const installed = join(homeDir, ".opencode", "bin", "opencode");
+  if (exists(installed)) return installed;
+  return "opencode";
 }
 
 /** Build `opencode run` args. Pure + exported for unit testing the resume-flag
