@@ -82,7 +82,8 @@ verified (qwen3-14b); but the stream is **buffered** (flushed at turn end, not
 line-by-line), so live `TurnEvent` streaming isn't possible via `run` — it'd
 need `opencode serve` + SSE. NOTE: opencode's agent loop is tool-heavy; small
 models (≤4B, e.g. gemma4-e4b) stall and never complete a turn — set
-`OPENCODE_DEFAULT_MODEL` to a capable tool-caller (qwen3-14b verified).
+`OPENCODE_DEFAULT_MODEL` to a capable tool-caller (gemma4-12b and qwen3-14b
+both verified end-to-end; gemma4-e4b fails).
 ⁴ opencode is wired to the papercup bun MCP plugin (`server.ts`) via a
 per-session `OPENCODE_CONFIG` (`writePapercupMcpConfig`), giving it the
 background-process tools (`spawn_bg`/`list_bg`/`kill_bg`/`tail_bg`) routed to

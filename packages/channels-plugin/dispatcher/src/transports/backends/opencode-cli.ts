@@ -17,7 +17,8 @@ import type { AgentReply, RespondOptions } from "./registry.ts";
  *   OPENCODE_DEFAULT_MODEL — fallback model, "provider/model" (e.g. ollama/qwen3-14b).
  *                            NOTE: opencode's agent loop is tool-heavy; small models
  *                            (≤4B, e.g. gemma4-e4b) stall/loop and never complete a
- *                            turn. Use a capable tool-calling model (qwen3-14b worked).
+ *                            turn. Use a capable tool-calling model (gemma4-12b and
+ *                            qwen3-14b both verified; gemma4-e4b fails).
  *   OPENCODE_EXTRA_ARGS    — extra CLI flags appended to every invocation
  *
  * Resume (verified Jun 2026): opencode generates its OWN `ses_…` ids and ignores
