@@ -72,7 +72,7 @@ surface (stream-json, MCP, `--add-dir`, partial messages) is deeper.
 | Token usage | ✅ | ✅ | ❌² | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Live streaming | ✅ | ❌ | ❌² | ❌³ | ❌ | ❌ | ❌ | ❌ |
 | Papercup MCP tools⁴ | ✅ | ❌ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ❌ |
-| Outbox attachments | ✅ | ❌ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ❌ |
+| Outbox attachments | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ❌ |
 | Mid-turn interrupt | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ² agy `-p` emits **plain text** — no token stats and no incremental output, so
@@ -106,7 +106,7 @@ server). claude-code's full MCP surface still exceeds this.
 |---|---|
 | antigravity | binary `agy` (`ANTIGRAVITY_BINARY`); remote Gemini auth in `~/.gemini`. `ANTIGRAVITY_PRINT_TIMEOUT` defaults `24h`. |
 | opencode | binary auto-detected at `~/.opencode/bin/opencode` if not on PATH; override with `OPENCODE_BINARY`. Provider/model via `opencode.jsonc` (`OPENCODE_DEFAULT_MODEL`). |
-| codex | **not installed** on this host; backend hardcodes `spawn("codex")`. `CODEX_SANDBOX` defaults `read-only` (can't edit files). |
+| codex | binary `codex` (override `CODEX_BINARY`). `CODEX_SANDBOX` = `read-only`\|`workspace-write`\|`danger-full-access` (default **workspace-write** so it can edit). Per-session cwd via opts.cwd. Resume: captures the real thread id from the `thread.started` JSON event, resumes via `codex exec resume <id>`. **Not installed on this host — adapter verified against docs, not runtime-tested.** Don't wire codex MCP while using `--json` (codex bug: `--json` is silently ignored when MCP servers are active → malformed output). |
 | gemini-cli | binary `gemini` (`GEMINI_BINARY`). |
 | aider / amp / crush | binaries `aider` / `amp` / `crush` (`*_BINARY`). |
 
@@ -117,5 +117,8 @@ server). claude-code's full MCP surface still exceeds this.
 - opencode: token tracking, streaming, MCP — blocked on a working model to
   observe the `--format json` schema.
 - gemini-cli: verify `--session-id` actually adopts a caller-supplied UUID.
-- codex: install + flip `CODEX_SANDBOX` to a writable mode; wire outbox.
+- codex: docs-hardened (workspace-write default, per-session cwd, CODEX_BINARY,
+  outbox via --add-dir) but **runtime-untested** — install codex and verify a
+  real two-turn run (resume + token parsing + outbox). MCP intentionally not
+  wired (codex `--json` + MCP is broken upstream).
 - MCP papercup tools for the per-turn CLIs that support MCP (codex, opencode).

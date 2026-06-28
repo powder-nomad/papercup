@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import type { AgentBackend, AgentBackendOpts, AgentReply, RespondOptions } from "./registry.ts";
 import { runWithResumeRecovery } from "./_recovery.ts";
 
@@ -49,9 +50,26 @@ export class CodexBackend implements AgentBackend {
     return true;
   }
 
-  async respond(userText: string, _opts?: RespondOptions): Promise<AgentReply> {
+  async respond(userText: string, respondOpts: RespondOptions = {}): Promise<AgentReply> {
+    const binary = process.env.CODEX_BINARY ?? "codex";
+    const cwd = this.opts.cwd ?? "/tmp";
+    try { mkdirSync(cwd, { recursive: true }); } catch { /* surfaced by spawn */ }
     const projectDirs = process.env.PROJECT_DIRS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [];
-    const sandbox = process.env.CODEX_SANDBOX ?? "read-only";
+    // Default to workspace-write so codex can actually edit files (read-only
+    // blocks all writes → it can't do real work). Override via CODEX_SANDBOX
+    // (read-only | workspace-write | danger-full-access). Flag values verified
+    // against the codex CLI reference (Jun 2026); NOT runtime-tested here —
+    // codex isn't installed on this host.
+    const sandbox = process.env.CODEX_SANDBOX ?? "workspace-write";
+    // Writable sandbox roots: the per-turn outbox (so codex can drop reply
+    // attachments) + any configured project dirs. --add-dir paths must already
+    // exist (per-turn.ts pre-creates the outbox). Applied on the first turn;
+    // codex exec resume doesn't document --add-dir, so outbox writes are
+    // first-turn only there.
+    const writableDirs = [
+      ...(respondOpts.outboxDir ? [respondOpts.outboxDir] : []),
+      ...projectDirs,
+    ];
 
     // Build either first-turn args (with sandbox + add-dir + system prompt
     // prefix) or resume args (positional `resume <thread-id>`). Both shapes
@@ -70,7 +88,7 @@ export class CodexBackend implements AgentBackend {
           "--json",
           "--sandbox", sandbox,
         ];
-        for (const dir of projectDirs) args.push("--add-dir", dir);
+        for (const dir of writableDirs) args.push("--add-dir", dir);
       } else {
         prompt = userText;
         args = [
@@ -90,7 +108,7 @@ export class CodexBackend implements AgentBackend {
     // it twice if the first attempt errors with "thread not found".
     const runOnce = async (effectiveArgs: string[]): Promise<AgentReply> => {
       const t0 = Date.now();
-      const proc = spawn("codex", effectiveArgs, { stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp" });
+      const proc = spawn(binary, effectiveArgs, { stdio: ["ignore", "pipe", "pipe"], cwd });
       this.inFlight = proc;
       let stdout = "";
       let stderr = "";
@@ -106,7 +124,7 @@ export class CodexBackend implements AgentBackend {
 
       if (code !== 0) {
         if (code === 143 || proc.killed) throw new Error("cancelled");
-        throw new Error(`codex exited ${code}: ${stderr.slice(-500)}`);
+        throw new Error(`Failed to resume Codex session. The thread may not exist - starting a new session instead. Original error: ${code}: ${stderr.slice(-500)}`);
       }
 
       const parsed = parseCodexJsonl(stdout);
