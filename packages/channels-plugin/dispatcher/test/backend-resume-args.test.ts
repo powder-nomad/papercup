@@ -146,14 +146,17 @@ function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T):
   }
 }
 
-test('writePapercupMcpConfig returns undefined when disabled via PAPERCUP_OPENCODE_MCP=0', () => {
+test('writePapercupMcpConfig is opt-in: returns undefined by default (unset or !=1)', () => {
+  withEnv({ PAPERCUP_OPENCODE_MCP: undefined }, () => {
+    assert.equal(writePapercupMcpConfig('sess-1'), undefined)
+  })
   withEnv({ PAPERCUP_OPENCODE_MCP: '0' }, () => {
     assert.equal(writePapercupMcpConfig('sess-1'), undefined)
   })
 })
 
-test('writePapercupMcpConfig returns undefined when plugin server.ts is missing', () => {
-  withEnv({ PAPERCUP_OPENCODE_MCP: undefined, PAPERCUP_PLUGIN_DIR: '/nonexistent/plugin' }, () => {
+test('writePapercupMcpConfig returns undefined when plugin server.ts is missing (even if opted in)', () => {
+  withEnv({ PAPERCUP_OPENCODE_MCP: '1', PAPERCUP_PLUGIN_DIR: '/nonexistent/plugin' }, () => {
     assert.equal(writePapercupMcpConfig('sess-1'), undefined)
   })
 })
@@ -165,7 +168,7 @@ test('writePapercupMcpConfig writes a valid per-session local MCP config', () =>
   writeFileSync(join(pluginDir, 'server.ts'), '// stub')
   try {
     withEnv({
-      PAPERCUP_OPENCODE_MCP: undefined,
+      PAPERCUP_OPENCODE_MCP: '1',
       PAPERCUP_HOME: dir,
       PAPERCUP_PLUGIN_DIR: pluginDir,
       PAPERCUP_DISPATCHER_SOCK: '/tmp/test.sock',
