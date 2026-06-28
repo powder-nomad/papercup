@@ -204,6 +204,7 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
     const opts: AgentBackendOpts = {
       sessionId: cfg.sessionId,
       resume: cfg.resume,
+      cwd: cfg.cwd,
       model: cfg.model,
       effort: cfg.effort as AgentBackendOpts['effort'],
       permissionMode: cfg.permissionMode,

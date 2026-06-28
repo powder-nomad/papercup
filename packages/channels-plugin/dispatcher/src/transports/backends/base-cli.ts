@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type {
   AgentBackend,
@@ -85,6 +86,12 @@ export abstract class BaseCliBackend implements AgentBackend {
     stdinText?: string;
   }): Promise<{ stdout: string; stderr: string; elapsedMs: number }> {
     const { binary, args, cwd = "/tmp", userText, stdinText } = params;
+
+    // Per-session cwds (e.g. /tmp/papercup/<id>) may not exist yet — the
+    // dispatcher only pre-creates them for the channels/claude-code path.
+    // Without this, spawn() throws ENOENT on the chdir. Best-effort: if the
+    // dir can't be created we let spawn surface the real error.
+    try { mkdirSync(cwd, { recursive: true }); } catch { /* surfaced by spawn */ }
 
     const t0 = Date.now();
     const proc = spawn(binary, args, {

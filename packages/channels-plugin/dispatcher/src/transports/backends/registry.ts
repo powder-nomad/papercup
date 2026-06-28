@@ -70,6 +70,16 @@ export type AgentBackendOpts = {
   /** True if the session already exists and we should resume it. */
   resume?: boolean;
   /**
+   * Per-session working directory (dispatcher assigns `/tmp/papercup/<id>`).
+   * Backends should spawn their CLI here instead of `process.cwd()` (which is
+   * the dispatcher's own source tree). Critical for cwd-keyed CLIs:
+   * antigravity/opencode scope conversation history by cwd, so a unique cwd
+   * per session keeps `--continue` resuming the right conversation and
+   * prevents cross-session bleed. Falls back to the backend's `*_WORKDIR` env
+   * or process.cwd() when undefined.
+   */
+  cwd?: string;
+  /**
    * Reasoning-effort hint. Each backend translates to its own knob:
    * - claude-code  → `--effort <level>` flag (xhigh, max = Opus only)
    * - anthropic-api → maps to thinking.budget_tokens (minimal=disabled,

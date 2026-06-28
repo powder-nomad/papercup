@@ -2,44 +2,42 @@ import { BaseCliBackend } from "./base-cli.ts";
 import type { AgentReply, RespondOptions } from "./registry.ts";
 
 /**
- * OpenCode CLI backend. Flags verified against https://opencode.ai/docs/cli
- * (May 2026). OpenCode has explicit session management — `--session ID`
- * resumes a specific conversation, `--continue` resumes the last.
+ * OpenCode CLI backend (`opencode run`).
  *
  * Env config:
- *   OPENCODE_BINARY        — override binary path (default: "opencode")
- *   OPENCODE_WORKDIR       — working directory
- *   OPENCODE_DEFAULT_MODEL — fallback model name
+ *   OPENCODE_BINARY        — override binary path. REQUIRED if opencode isn't on
+ *                            PATH (the installer drops it at ~/.opencode/bin/opencode,
+ *                            which is NOT on PATH by default).
+ *   OPENCODE_WORKDIR       — working directory override (else opts.cwd)
+ *   OPENCODE_DEFAULT_MODEL — fallback model name (provider/model)
  *   OPENCODE_EXTRA_ARGS    — extra CLI flags appended to every invocation
  *
- * Output: parses `--format json` raw-event stream into final text. Each line
- * is one JSON event; the assistant's final reply is the concatenation of
- * "text"-typed deltas (best-effort, may need refinement after live testing).
+ * Resume model (verified Jun 2026): opencode generates its OWN `ses_…` session
+ * ids and scopes sessions to the project (= cwd). `--session <id>` means
+ * "continue an EXISTING id" — it does not adopt a caller-supplied UUID, so the
+ * old `--session <papercupSessionId>` was a no-op/miss. Instead each papercup
+ * session gets a unique cwd (opts.cwd = /tmp/papercup/<id>) and we resume with
+ * `-c/--continue` (continues the cwd's last session). First turn omits it so
+ * opencode creates the session.
  *
- * Session: uses `--session <papercup-session-id>` so the bot's UUID is the
- * opencode session id. opencode silently creates the session on first turn.
- *
- * Limitations (v1):
- *   - Token usage not extracted (opencode's event schema not fully verified).
- *   - TurnEvent streaming not emitted; just the final text.
+ * Output: `--format json` emits one JSON event per line; we concatenate
+ * text/message deltas into the final reply. Token usage is not yet extracted.
  */
 export class OpencodeCliBackend extends BaseCliBackend {
   async respond(userText: string, _respondOpts: RespondOptions = {}): Promise<AgentReply> {
     const binary = process.env.OPENCODE_BINARY ?? "opencode";
-    const cwd = process.env.OPENCODE_WORKDIR ?? process.cwd();
+    const cwd = this.opts.cwd ?? process.env.OPENCODE_WORKDIR ?? process.cwd();
     const model = this.opts.model ?? process.env.OPENCODE_DEFAULT_MODEL;
     const extra = (process.env.OPENCODE_EXTRA_ARGS ?? "")
       .split(/\s+/)
       .filter(Boolean);
 
-    const args = [
-      "run",
-      ...(this.sessionId ? ["--session", this.sessionId] : []),
-      ...(model ? ["--model", model] : []),
-      "--format", "json",
-      ...extra,
+    const args = buildOpencodeArgs({
       userText,
-    ];
+      model,
+      extra,
+      resume: !this.firstTurn,
+    });
 
     const { stdout, elapsedMs } = await this.runChild({
       binary,
@@ -66,6 +64,7 @@ export class OpencodeCliBackend extends BaseCliBackend {
       if (textChunks.length > 0) text = textChunks.join("").trim();
     }
 
+    this.firstTurn = false;
     return {
       text,
       inputTokens: 0,
@@ -73,6 +72,25 @@ export class OpencodeCliBackend extends BaseCliBackend {
       elapsedMs,
     };
   }
+}
+
+/** Build `opencode run` args. Pure + exported for unit testing the resume-flag
+ *  behavior. `resume: true` adds `--continue` (resumes the cwd's last session);
+ *  first turns pass `resume: false`. */
+export function buildOpencodeArgs(p: {
+  userText: string;
+  model?: string;
+  extra: string[];
+  resume: boolean;
+}): string[] {
+  return [
+    "run",
+    ...(p.resume ? ["--continue"] : []),
+    ...(p.model ? ["--model", p.model] : []),
+    "--format", "json",
+    ...p.extra,
+    p.userText,
+  ];
 }
 
 import { registerBackend } from "./registry.ts";
