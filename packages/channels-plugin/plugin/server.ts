@@ -341,9 +341,15 @@ function sendBgReq(
 function connectDispatcher(): void {
   const s = netConnect(DISPATCHER_SOCK)
   sock = s
+  let stableTimer: ReturnType<typeof setTimeout> | null = null
   s.on('connect', () => {
     connected = true
-    reconnectMs = 250
+    // Reset backoff only after the connection proves STABLE (5s). A flapping
+    // orphan that connects then immediately closes must NOT reset backoff to
+    // 250ms — otherwise it reconnect-storms ~4x/sec and churns memory until
+    // OOM (root cause of the multi-GB leaking orphan plugins).
+    stableTimer = setTimeout(() => { reconnectMs = 250 }, 5_000)
+    stableTimer.unref?.()
     process.stderr.write(
       `papercup-channels-plugin: dispatcher connected (session=${SESSION_ID})\n`,
     )
@@ -374,6 +380,7 @@ function connectDispatcher(): void {
   s.on('close', () => {
     connected = false
     sock = null
+    if (stableTimer) { clearTimeout(stableTimer); stableTimer = null }
     process.stderr.write(
       `papercup-channels-plugin: dispatcher disconnected, retrying in ${reconnectMs}ms\n`,
     )
@@ -479,5 +486,28 @@ function shutdown(): void {
 }
 process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)
+
+// Orphan guard. If the spawning agent (claude / opencode) dies, this plugin
+// can be left running — and under opencode the stdin-close path above does NOT
+// fire reliably, so the orphan reconnect-loops and leaks memory until it OOMs
+// the host. Capture the parent pid at startup and exit if it vanishes. This is
+// more robust than relying on stdin EOF and is the primary defense against the
+// leaking-orphan failure mode.
+const PARENT_PID = process.ppid
+const ORPHAN_CHECK_MS = 10_000
+const orphanGuard = setInterval(() => {
+  let parentAlive = false
+  try {
+    // signal 0 = liveness probe; throws ESRCH if the pid is gone.
+    if (PARENT_PID > 1) { process.kill(PARENT_PID, 0); parentAlive = true }
+  } catch { parentAlive = false }
+  if (!parentAlive) {
+    process.stderr.write(
+      `papercup-channels-plugin: parent ${PARENT_PID} gone — exiting (orphan guard)\n`,
+    )
+    shutdown()
+  }
+}, ORPHAN_CHECK_MS)
+orphanGuard.unref?.()
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', shutdown)
