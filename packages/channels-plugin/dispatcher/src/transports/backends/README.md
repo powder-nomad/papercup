@@ -71,7 +71,7 @@ surface (stream-json, MCP, `--add-dir`, partial messages) is deeper.
 | Resume recovery | ✅ | ✅ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ❌ |
 | Token usage | ✅ | ✅ | ❌² | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Live streaming | ✅ | ❌ | ❌² | ❌³ | ❌ | ❌ | ❌ | ❌ |
-| Papercup MCP tools⁴ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Papercup MCP tools⁴ | ✅ | ❌ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ❌ |
 | Outbox attachments | ✅ | ❌ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ❌ |
 | Mid-turn interrupt | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
@@ -83,8 +83,15 @@ line-by-line), so live `TurnEvent` streaming isn't possible via `run` — it'd
 need `opencode serve` + SSE. NOTE: opencode's agent loop is tool-heavy; small
 models (≤4B, e.g. gemma4-e4b) stall and never complete a turn — set
 `OPENCODE_DEFAULT_MODEL` to a capable tool-caller (qwen3-14b verified).
-⁴ `present_options` (interactive Discord buttons), `spawn_extension`, etc. —
-require wiring each CLI's MCP config to the papercup MCP server.
+⁴ opencode is wired to the papercup bun MCP plugin (`server.ts`) via a
+per-session `OPENCODE_CONFIG` (`writePapercupMcpConfig`), giving it the
+background-process tools (`spawn_bg`/`list_bg`/`kill_bg`/`tail_bg`) routed to
+the dispatcher by `PAPERCUP_SESSION_ID` over the shared UDS — verified
+end-to-end. Opt out with `PAPERCUP_OPENCODE_MCP=0`. Caveats: the plugin's
+`reply` tool is a no-op for per-turn sessions (the channels transport drops
+replies for sessions it doesn't own); `present_options`/`spawn_extension` are
+NOT in this plugin (they belonged to the dormant `PAPERCUP_MCP_URL` HTTP
+server). claude-code's full MCP surface still exceeds this.
 
 ## Required env / deployment notes
 

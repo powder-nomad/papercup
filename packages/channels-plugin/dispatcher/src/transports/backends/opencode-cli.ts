@@ -1,6 +1,8 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BaseCliBackend } from "./base-cli.ts";
 import type { AgentReply, RespondOptions } from "./registry.ts";
 
@@ -34,10 +36,21 @@ import type { AgentReply, RespondOptions } from "./registry.ts";
 export class OpencodeCliBackend extends BaseCliBackend {
   /** opencode's own `ses_…` id, captured from turn 1's event stream. */
   private opencodeSessionId?: string;
+  /** Path to the per-session OPENCODE_CONFIG file wiring the papercup MCP
+   *  plugin, once written. Cleaned up on stop(). */
+  private mcpConfigPath?: string;
 
   override reset(): void {
     super.reset();
     this.opencodeSessionId = undefined;
+  }
+
+  override stop(): void {
+    super.stop();
+    if (this.mcpConfigPath) {
+      try { rmSync(this.mcpConfigPath, { force: true }); } catch { /* best-effort */ }
+      this.mcpConfigPath = undefined;
+    }
   }
 
   override getBackendId(): string | undefined {
@@ -60,7 +73,13 @@ export class OpencodeCliBackend extends BaseCliBackend {
       resume: !this.firstTurn,
     });
 
-    const { stdout, elapsedMs } = await this.runChild({ binary, args, cwd, userText });
+    // Inject the papercup MCP plugin (background-process tools, /procs-tracked)
+    // via a per-session OPENCODE_CONFIG. Best-effort: if the plugin/bun can't be
+    // resolved, opencode just runs without papercup tools.
+    const mcpConfig = this.mcpConfigPath ?? (this.mcpConfigPath = writePapercupMcpConfig(this.sessionId));
+    const env = mcpConfig ? { OPENCODE_CONFIG: mcpConfig } : undefined;
+
+    const { stdout, elapsedMs } = await this.runChild({ binary, args, cwd, userText, env });
 
     const parsed = parseOpencodeStream(stdout);
     if (parsed.sessionId) this.opencodeSessionId = parsed.sessionId;
@@ -156,6 +175,68 @@ export function parseOpencodeStream(stdout: string): OpencodeParseResult {
   }
 
   return { text: textChunks.join("").trim(), sessionId, inputTokens, outputTokens };
+}
+
+/** Write a per-session OPENCODE_CONFIG that registers the papercup bun MCP
+ *  plugin (server.ts) as a local stdio MCP server, giving opencode the
+ *  background-process tools (spawn_bg/list_bg/kill_bg/tail_bg) routed to the
+ *  dispatcher by PAPERCUP_SESSION_ID over the shared UDS. Returns the config
+ *  path, or undefined when disabled (PAPERCUP_OPENCODE_MCP=0) or the plugin/bun
+ *  can't be resolved (opencode then runs without papercup tools).
+ *
+ *  Only the `mcp` section is written; opencode merges it with the global
+ *  ~/.config/opencode config (provider/model) at load. NOTE: the plugin's
+ *  `reply` tool is a no-op for per-turn sessions (the channels transport drops
+ *  replies for sessions it doesn't own) — opencode replies via normal output.
+ *  present_options/spawn_extension are NOT part of this plugin. */
+export function writePapercupMcpConfig(sessionId: string | undefined): string | undefined {
+  if (!sessionId) return undefined;
+  if (process.env.PAPERCUP_OPENCODE_MCP === "0") return undefined;
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  // backends -> transports -> src -> dispatcher -> channels-plugin, then /plugin
+  const pluginDir = process.env.PAPERCUP_PLUGIN_DIR
+    ?? resolve(here, "..", "..", "..", "..", "plugin");
+  const serverPath = join(pluginDir, "server.ts");
+  if (!existsSync(serverPath)) return undefined;
+
+  const papercupHome = process.env.PAPERCUP_HOME ?? join(homedir(), ".papercup-channels");
+  const dispatcherSock = process.env.PAPERCUP_DISPATCHER_SOCK
+    ?? join(papercupHome, "dispatcher.sock");
+
+  const config = {
+    mcp: {
+      papercup: {
+        type: "local",
+        command: [resolveBunPath(), serverPath],
+        environment: {
+          PAPERCUP_SESSION_ID: sessionId,
+          PAPERCUP_DISPATCHER_SOCK: dispatcherSock,
+        },
+        enabled: true,
+      },
+    },
+  };
+  const path = join(papercupHome, `opencode-mcp-${sessionId}.json`);
+  try {
+    mkdirSync(papercupHome, { recursive: true, mode: 0o700 });
+    writeFileSync(path, JSON.stringify(config, null, 2), { mode: 0o600 });
+  } catch {
+    return undefined;
+  }
+  return path;
+}
+
+/** Resolve an absolute bun path (the MCP plugin is a bun script). Mirrors the
+ *  channels transport's resolver: ~/.bun/bin/bun > `which bun` > bare "bun". */
+function resolveBunPath(): string {
+  const candidate = join(homedir(), ".bun", "bin", "bun");
+  if (existsSync(candidate)) return candidate;
+  try {
+    const r = spawnSync("which", ["bun"], { encoding: "utf8", timeout: 2000 });
+    if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
+  } catch { /* fall through */ }
+  return "bun";
 }
 
 import { registerBackend } from "./registry.ts";

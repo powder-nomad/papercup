@@ -96,8 +96,11 @@ export abstract class BaseCliBackend implements AgentBackend {
     cwd?: string;
     userText: string;
     stdinText?: string;
+    /** Extra env vars merged over process.env for the child (e.g. a backend
+     *  injecting OPENCODE_CONFIG). Undefined → inherit process.env unchanged. */
+    env?: Record<string, string>;
   }): Promise<{ stdout: string; stderr: string; elapsedMs: number }> {
-    const { binary, args, cwd = "/tmp", userText, stdinText } = params;
+    const { binary, args, cwd = "/tmp", userText, stdinText, env } = params;
 
     // Per-session cwds (e.g. /tmp/papercup/<id>) may not exist yet — the
     // dispatcher only pre-creates them for the channels/claude-code path.
@@ -110,6 +113,7 @@ export abstract class BaseCliBackend implements AgentBackend {
       stdio: [stdinText !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
       cwd,
       detached: true,
+      ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     this.inFlight = proc;
     const childPid = proc.pid;

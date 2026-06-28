@@ -2,7 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { buildAntigravityArgs } from '../src/transports/backends/antigravity-cli.ts'
-import { buildOpencodeArgs, resolveOpencodeBinary, parseOpencodeStream } from '../src/transports/backends/opencode-cli.ts'
+import { buildOpencodeArgs, resolveOpencodeBinary, parseOpencodeStream, writePapercupMcpConfig } from '../src/transports/backends/opencode-cli.ts'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { resolveBackendCwd } from '../src/transports/backends/base-cli.ts'
 
 /* ----------------------------- cwd precedence ----------------------------- */
@@ -126,6 +129,59 @@ test('parseOpencodeStream tolerates non-json/blank lines', () => {
   const r = parseOpencodeStream('\nnot json\n' + JSON.stringify({ type: 'text', sessionID: 's', part: { text: 'ok' } }) + '\n')
   assert.equal(r.text, 'ok')
   assert.equal(r.sessionId, 's')
+})
+
+/* ----------------------- opencode papercup MCP config ----------------------- */
+
+function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T): T {
+  const saved: Record<string, string | undefined> = {}
+  for (const k of Object.keys(overrides)) saved[k] = process.env[k]
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === undefined) delete process.env[k]; else process.env[k] = v
+  }
+  try { return fn() } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v
+    }
+  }
+}
+
+test('writePapercupMcpConfig returns undefined when disabled via PAPERCUP_OPENCODE_MCP=0', () => {
+  withEnv({ PAPERCUP_OPENCODE_MCP: '0' }, () => {
+    assert.equal(writePapercupMcpConfig('sess-1'), undefined)
+  })
+})
+
+test('writePapercupMcpConfig returns undefined when plugin server.ts is missing', () => {
+  withEnv({ PAPERCUP_OPENCODE_MCP: undefined, PAPERCUP_PLUGIN_DIR: '/nonexistent/plugin' }, () => {
+    assert.equal(writePapercupMcpConfig('sess-1'), undefined)
+  })
+})
+
+test('writePapercupMcpConfig writes a valid per-session local MCP config', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pc-mcp-'))
+  const pluginDir = join(dir, 'plugin')
+  mkdirSync(pluginDir)
+  writeFileSync(join(pluginDir, 'server.ts'), '// stub')
+  try {
+    withEnv({
+      PAPERCUP_OPENCODE_MCP: undefined,
+      PAPERCUP_HOME: dir,
+      PAPERCUP_PLUGIN_DIR: pluginDir,
+      PAPERCUP_DISPATCHER_SOCK: '/tmp/test.sock',
+    }, () => {
+      const p = writePapercupMcpConfig('sess-XYZ')
+      assert.ok(p, 'returns a config path')
+      const srv = JSON.parse(readFileSync(p!, 'utf8')).mcp.papercup
+      assert.equal(srv.type, 'local')
+      assert.equal(srv.enabled, true)
+      assert.equal(srv.command[1], join(pluginDir, 'server.ts'))
+      assert.equal(srv.environment.PAPERCUP_SESSION_ID, 'sess-XYZ')
+      assert.equal(srv.environment.PAPERCUP_DISPATCHER_SOCK, '/tmp/test.sock')
+    })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('resolveOpencodeBinary honors OPENCODE_BINARY env first', () => {

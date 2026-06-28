@@ -101,6 +101,11 @@ async function main(): Promise<void> {
   const inboxDir = join(papercupHome, 'inbox')
   const here = fileURLToPath(new URL('.', import.meta.url))
   const pluginDir = process.env.PAPERCUP_PLUGIN_DIR ?? resolve(here, '..', '..', 'plugin')
+  // Publish resolved paths to the env so in-process per-turn backends (e.g.
+  // opencode-cli wiring the papercup MCP plugin) can find the bun plugin and
+  // the dispatcher socket without re-deriving them.
+  process.env.PAPERCUP_PLUGIN_DIR = pluginDir
+  process.env.PAPERCUP_DISPATCHER_SOCK = dispatcherSock
   const projectDir = process.env.PAPERCUP_PROJECT_DIR ?? undefined
   const allowedUserIds = new Set(
     (process.env.PAPERCUP_ALLOWED_USERS ?? '')
