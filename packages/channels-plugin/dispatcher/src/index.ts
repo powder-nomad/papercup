@@ -704,12 +704,23 @@ async function main(): Promise<void> {
   // alerts (failure warnings, disabled-job notices) have a place to land.
   scheduler?.start()
 
-  // Re-spawn previously-bound sessions so they're warm before any inbound.
-  // Best-effort; failures don't block boot.
-  for (const s of sessions.list()) {
-    if (s.channelId) {
+  // Boot warm-up is OPT-IN. On a memory-constrained / no-swap host, eagerly
+  // spawning every bound channels session at boot OOM-loops the box: each
+  // `claude --channels --resume` child is ~800 MB, so a handful exceeds RAM
+  // before the idle reaper can intervene. Sessions spawn lazily on their first
+  // inbound message anyway (see message handler + scheduler), and the reaper
+  // bounds concurrency. Set PAPERCUP_BOOT_RESPAWN=1 to warm them at boot when
+  // you actually have the headroom. Best-effort; failures don't block boot.
+  const boundSessions = sessions.list().filter(s => s.channelId)
+  if (process.env.PAPERCUP_BOOT_RESPAWN === '1') {
+    for (const s of boundSessions) {
       try { spawnFor(s) } catch (err) { log.warn(`boot respawn failed for ${s.id}:`, err) }
     }
+  } else {
+    log.info(
+      `boot: warm-up disabled (set PAPERCUP_BOOT_RESPAWN=1 to enable); ` +
+      `${boundSessions.length} channels session(s) will spawn lazily on first message`,
+    )
   }
 
   // Periodic context-pressure scanner. The channels transport's claude child
