@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import { buildAntigravityArgs } from '../src/transports/backends/antigravity-cli.ts'
 import { buildOpencodeArgs, resolveOpencodeBinary, parseOpencodeStream, writePapercupMcpConfig } from '../src/transports/backends/opencode-cli.ts'
+import { parseModel } from '../src/transports/backends/opencode-serve-backend.ts'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -217,4 +218,28 @@ test('opencode passes model and json format', () => {
   const fi = args.indexOf('--format')
   assert.equal(args[fi + 1], 'json')
   assert.ok(args.includes('--variant'))
+})
+
+/* ----------------------- opencode-serve parseModel ----------------------- */
+
+test('parseModel splits "providerID/modelID" correctly', () => {
+  const m = parseModel('ollama/gemma4-e4b')
+  assert.deepEqual(m, { providerID: 'ollama', id: 'gemma4-e4b' })
+})
+
+test('parseModel handles provider with dots (future-proof)', () => {
+  const m = parseModel('anthropic/claude-sonnet-4-6')
+  assert.deepEqual(m, { providerID: 'anthropic', id: 'claude-sonnet-4-6' })
+})
+
+test('parseModel returns undefined for bare model name (no slash)', () => {
+  assert.equal(parseModel('gemma4-e4b'), undefined)
+})
+
+test('parseModel returns undefined for undefined input', () => {
+  assert.equal(parseModel(undefined), undefined)
+})
+
+test('parseModel handles empty string', () => {
+  assert.equal(parseModel(''), undefined)
 })

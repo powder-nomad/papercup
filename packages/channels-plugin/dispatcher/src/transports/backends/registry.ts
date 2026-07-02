@@ -185,6 +185,7 @@ import "./codex.ts";
 import "./aider-cli.ts";
 import "./gemini-cli.ts";
 import "./opencode-cli.ts";
+import "./opencode-serve-backend.ts";
 import "./crush-cli.ts";
 import "./amp-cli.ts";
 import "./antigravity-cli.ts";

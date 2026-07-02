@@ -65,29 +65,26 @@ surface (stream-json, MCP, `--add-dir`, partial messages) is deeper.
 
 ✅ works · ⚠️ partial/unverified · ❌ missing/not possible
 
-| Capability | claude-code | codex | antigravity | opencode | gemini | aider | amp | crush |
-|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
-| Multi-turn resume | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ⚠️ | ❌ |
-| Resume recovery | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
-| Token usage | ✅ | ✅ | ❌² | ✅ | ✅ | ❌ | ❌ | ❌ |
-| Live streaming | ✅ | ❌ | ❌² | ❌³ | ❌ | ❌ | ❌ | ❌ |
-| Papercup MCP tools⁴ | ✅ | ❌ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ❌ |
-| Outbox attachments | ✅ | ⚠️ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ❌ |
-| Mid-turn interrupt | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Capability | claude-code | codex | antigravity | opencode-cli | opencode-serve | gemini | aider | amp | crush |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| Multi-turn resume | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ⚠️ | ❌ |
+| Resume recovery | ✅ | ✅ | ✅ | ✅ | ⚠️⁵ | ✅ | ❌ | ❌ | ❌ |
+| Token usage | ✅ | ✅ | ❌² | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Live streaming | ✅ | ❌ | ❌² | ❌³ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Papercup MCP tools⁴ | ✅ | ❌ | ❌ | ⚠️ | ❌⁶ | ❌ | ❌ | ❌ | ❌ |
+| Outbox attachments | ✅ | ⚠️ | ✅ | ⚠️ | ⚠️ | ✅ | ❌ | ❌ | ❌ |
+| Mid-turn interrupt | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ² agy `-p` emits **plain text** — no token stats and no incremental output, so
 tokens/streaming aren't possible through that interface.
-³ opencode's `--format json` token usage + resume are now implemented and
+³ `opencode-cli`'s `--format json` token usage + resume are implemented and
 verified (qwen3-14b); but the stream is **buffered** (flushed at turn end, not
-line-by-line), so live `TurnEvent` streaming isn't possible via `run` — it'd
-need `opencode serve` + SSE. Models: gemma4-e4b, gemma4-12b, and qwen3-14b all
-verified completing opencode turns end-to-end (e4b ~8s/turn). Bigger models are
-preferable for complex multi-step tool orchestration, but e4b is usable.
-Pitfalls that look like "the model stalled": (1) `OPENCODE_DEFAULT_MODEL` /
-`--model` naming a model ollama doesn't have — opencode hangs on a request that
-never resolves; (2) a cold first load of a large-context model. Neither is an
-e4b limitation.
-⁴ opencode is wired to the papercup bun MCP plugin (`server.ts`) via a
+line-by-line), so live `TurnEvent` streaming isn't possible via `run`. Use
+`opencode-serve` for live streaming. Models: gemma4-e4b, gemma4-12b, and
+qwen3-14b all verified completing opencode turns end-to-end (e4b ~8s/turn).
+Pitfalls: (1) model not installed in ollama → opencode hangs; (2) cold first
+load of a large-context model.
+⁴ opencode-cli is wired to the papercup bun MCP plugin (`server.ts`) via a
 per-session `OPENCODE_CONFIG` (`writePapercupMcpConfig`), giving it the
 background-process tools (`spawn_bg`/`list_bg`/`kill_bg`/`tail_bg`) routed to
 the dispatcher by `PAPERCUP_SESSION_ID` over the shared UDS — verified
@@ -99,13 +96,21 @@ safe on by default.) Caveats: the plugin's
 replies for sessions it doesn't own); `present_options`/`spawn_extension` are
 NOT in this plugin (they belonged to the dormant `PAPERCUP_MCP_URL` HTTP
 server). claude-code's full MCP surface still exceeds this.
+⁵ opencode-serve: session is owned by the shared server, not recoverable via
+the CLI recovery pattern. If the server is restarted the opencode session id is
+lost; the next turn creates a fresh opencode session (graceful degradation —
+prior turns lost, but the Discord channel session continues uninterrupted).
+⁶ opencode-serve doesn't currently inject the papercup MCP plugin — the server
+is shared, so the per-session `OPENCODE_CONFIG` trick used by opencode-cli
+doesn't apply cleanly. Future: pass MCP config at `POST /session` creation.
 
 ## Required env / deployment notes
 
 | Backend | Notes |
 |---|---|
 | antigravity | binary `agy` (`ANTIGRAVITY_BINARY`); remote Gemini auth in `~/.gemini`. `ANTIGRAVITY_PRINT_TIMEOUT` defaults `24h`. |
-| opencode | binary auto-detected at `~/.opencode/bin/opencode` if not on PATH; override with `OPENCODE_BINARY`. Provider/model via `opencode.jsonc` (`OPENCODE_DEFAULT_MODEL`). |
+| opencode-cli | binary auto-detected at `~/.opencode/bin/opencode` if not on PATH; override with `OPENCODE_BINARY`. Provider/model via `opencode.jsonc` (`OPENCODE_DEFAULT_MODEL`). |
+| opencode-serve | same binary/model config as opencode-cli. One `opencode serve` process shared across all sessions. Port via `OPENCODE_SERVE_PORT` (default: OS-assigned). Server starts on first turn; stays alive for the dispatcher lifetime. |
 | codex | binary `codex` (override `CODEX_BINARY`). `CODEX_SANDBOX` = `read-only`\|`workspace-write`\|`danger-full-access` (default **workspace-write** so it can edit). Per-session cwd via opts.cwd. Resume: captures the real thread id from the `thread.started` JSON event, resumes via `codex exec resume <id>`. **Not installed on this host — adapter verified against docs, not runtime-tested.** Don't wire codex MCP while using `--json` (codex bug: `--json` is silently ignored when MCP servers are active → malformed output). |
 | gemini-cli | binary `gemini` (`GEMINI_BINARY`). |
 | aider / amp / crush | binaries `aider` / `amp` / `crush` (`*_BINARY`). |
