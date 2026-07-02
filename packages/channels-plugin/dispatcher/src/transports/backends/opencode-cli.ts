@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BaseCliBackend } from "./base-cli.ts";
 import type { AgentReply, RespondOptions } from "./registry.ts";
+import { runWithResumeRecovery } from "./_recovery.ts";
 
 /**
  * OpenCode CLI backend (`opencode run`).
@@ -64,10 +65,21 @@ export class OpencodeCliBackend extends BaseCliBackend {
     const binary = resolveOpencodeBinary(process.env.OPENCODE_BINARY);
     const cwd = this.resolveCwd(process.env.OPENCODE_WORKDIR);
     const model = this.opts.model ?? process.env.OPENCODE_DEFAULT_MODEL;
+
+    // Guard: without a model, opencode opens TUI and hangs indefinitely.
+    // Surface a clear error immediately rather than timing out.
+    if (!model) {
+      throw new Error(
+        "opencode-cli: no model configured — set OPENCODE_DEFAULT_MODEL (e.g. ollama/gemma4-e4b) " +
+        "or use /model name:<provider/model> to pick one for this session",
+      );
+    }
+
     const extra = (process.env.OPENCODE_EXTRA_ARGS ?? "")
       .split(/\s+/)
       .filter(Boolean);
 
+    const wasFirstTurn = this.firstTurn;
     const args = buildOpencodeArgs({
       userText,
       model,
@@ -83,7 +95,24 @@ export class OpencodeCliBackend extends BaseCliBackend {
     const env = mcpConfig ? { OPENCODE_CONFIG: mcpConfig } : undefined;
 
     try {
-      const { stdout, elapsedMs } = await this.runChild({ binary, args, cwd, userText, env });
+      // runWithResumeRecovery: if --session <ses_id> fails with "Session not found"
+      // (the stored session was never persisted — e.g. first turn was cancelled),
+      // reset to first-turn state and retry with a fresh session.
+      const { stdout, elapsedMs } = await runWithResumeRecovery({
+        backendName: "opencode-cli",
+        isFirstTurn: wasFirstTurn,
+        sessionId: this.sessionId ?? "unknown",
+        errorPattern: /Session not found/i,
+        runChild: () => this.runChild({ binary, args, cwd, userText, env }),
+        buildRecoveryRunChild: () => {
+          const freshArgs = buildOpencodeArgs({ userText, model, extra, sessionId: undefined, resume: false });
+          return () => this.runChild({ binary, args: freshArgs, cwd, userText, env });
+        },
+        onRecover: () => {
+          this.firstTurn = true;
+          this.opencodeSessionId = undefined;
+        },
+      });
 
       const parsed = parseOpencodeStream(stdout);
       if (parsed.sessionId) this.opencodeSessionId = parsed.sessionId;

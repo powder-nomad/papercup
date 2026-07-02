@@ -68,7 +68,7 @@ surface (stream-json, MCP, `--add-dir`, partial messages) is deeper.
 | Capability | claude-code | codex | antigravity | opencode | gemini | aider | amp | crush |
 |---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
 | Multi-turn resume | ✅ | ✅ | ✅ | ✅ | ⚠️ | ✅ | ⚠️ | ❌ |
-| Resume recovery | ✅ | ✅ | ✅ | ⚠️ | ✅ | ❌ | ❌ | ❌ |
+| Resume recovery | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Token usage | ✅ | ✅ | ❌² | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Live streaming | ✅ | ❌ | ❌² | ❌³ | ❌ | ❌ | ❌ | ❌ |
 | Papercup MCP tools⁴ | ✅ | ❌ | ❌ | ⚠️ | ❌ | ❌ | ❌ | ❌ |
@@ -114,11 +114,11 @@ server). claude-code's full MCP surface still exceeds this.
 
 ## Known TODO (parity gaps)
 
-- opencode: token tracking, streaming, MCP — blocked on a working model to
-  observe the `--format json` schema.
+- opencode: live streaming not possible via `opencode run` (buffered output); would need `opencode serve` + SSE.
+- opencode: outbox (⚠️) — hint appended to prompt, honoured by capable models (12b+); e4b may skip it.
 - gemini-cli: verify `--session-id` actually adopts a caller-supplied UUID.
 - codex: docs-hardened (workspace-write default, per-session cwd, CODEX_BINARY,
   outbox via --add-dir) but **runtime-untested** — install codex and verify a
   real two-turn run (resume + token parsing + outbox). MCP intentionally not
   wired (codex `--json` + MCP is broken upstream).
-- MCP papercup tools for the per-turn CLIs that support MCP (codex, opencode).
+- MCP papercup tools for the per-turn CLIs that support MCP (codex).

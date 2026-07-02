@@ -75,6 +75,15 @@ test('antigravity omits bypass flag when bypass=false', () => {
 
 /* ------------------------------- opencode ------------------------------- */
 
+test('opencode recovery args: fresh session (no --session, no --continue) after session-not-found', () => {
+  // Simulates what buildRecoveryRunChild builds inside the backend's respond().
+  const freshArgs = buildOpencodeArgs({ userText: 'retry', model: 'ollama/gemma4-e4b', extra: [], sessionId: undefined, resume: false })
+  assert.ok(!freshArgs.includes('--session'), 'recovery must not pass --session')
+  assert.ok(!freshArgs.includes('--continue'), 'recovery must not pass --continue')
+  assert.equal(freshArgs[0], 'run')
+  assert.equal(freshArgs[freshArgs.length - 1], 'retry')
+})
+
 test('opencode first turn does NOT pass --continue and never a caller --session', () => {
   const args = buildOpencodeArgs({ userText: 'hi', extra: [], resume: false })
   assert.equal(args[0], 'run')
