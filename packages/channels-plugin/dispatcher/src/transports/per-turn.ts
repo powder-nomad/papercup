@@ -48,6 +48,10 @@ type PerSessionState = {
   backendName?: string
   /** Currently-running respond() promise, if any. */
   inFlight?: Promise<void>
+  /** Epoch ms the current in-flight turn started. Lets isBusy() cap how long a
+   *  session counts as "busy" so a hung backend turn eventually becomes
+   *  reapable instead of pinning the session forever. */
+  turnStartedAt?: number
   /** Currently-applied runtime config; refreshed on every ensureRunning(). */
   cfg?: SessionRuntimeConfig
   /** Discord channel currently bound. */
@@ -58,6 +62,9 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
   readonly name: TransportName = 'per-turn'
   private states = new Map<string, PerSessionState>()
   private log: Logger
+  /** Cap on how long a turn counts as "busy" for reap-protection (6h). Beyond
+   *  this a hung/deadlocked turn stops pinning the session. */
+  private static readonly MAX_BUSY_MS = 6 * 60 * 60_000
   /** `<papercupHome>/outbox/<channelId>/<turnId>/` — per-turn drop folder.
    *  Agent writes files here with its native tools; we scan after the backend
    *  exits and ship whatever survives the Discord size/count caps. */
@@ -133,6 +140,19 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
   isAlive(sessionId: string): boolean {
     const s = this.states.get(sessionId)
     return !!s?.inFlight
+  }
+
+  /** A per-turn session is "busy" while a turn's respond() is in flight —
+   *  including long silent stretches where the agent waits on subagents. The
+   *  reaper skips busy sessions. Capped at MAX_BUSY_MS so a hung turn (backend
+   *  deadlock with no PAPERCUP_TURN_TIMEOUT_S) eventually becomes reapable. */
+  isBusy(sessionId: string): boolean {
+    const s = this.states.get(sessionId)
+    if (!s?.inFlight) return false
+    if (s.turnStartedAt !== undefined && Date.now() - s.turnStartedAt > PerTurnTransport.MAX_BUSY_MS) {
+      return false
+    }
+    return true
   }
 
   isPluginOnline(_sessionId: string): boolean {
@@ -232,6 +252,7 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
     const backend = await this.ensureBackend(sessionId, s)
     if (!backend) return
 
+    s.turnStartedAt = Date.now()
     s.inFlight = (async () => {
       while (s.queue.length > 0) {
         const events = s.queue.splice(0, s.queue.length)
@@ -351,6 +372,7 @@ export class PerTurnTransport extends EventEmitter implements SessionTransport {
       }
     })().finally(() => {
       s.inFlight = undefined
+      s.turnStartedAt = undefined
     })
 
     await s.inFlight

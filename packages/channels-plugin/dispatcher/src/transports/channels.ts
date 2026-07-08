@@ -74,6 +74,15 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
    * skipped the drain (plugin wasn't connected yet).
    */
   private channelReady = new Set<string>()
+  /**
+   * Turn-in-flight marker: sessionId → epoch ms when the current turn's inbound
+   * event was pushed. Set in pushEvent, cleared when the session next replies.
+   * `isBusy()` reads it so the idle reaper won't kill a session that's mid-turn
+   * (e.g. claude working silently while its Task subagents run). Capped by
+   * MAX_BUSY_MS so a turn that never replies (crash) still becomes reapable.
+   */
+  private turnStartedAt = new Map<string, number>()
+  private static readonly MAX_BUSY_MS = 6 * 60 * 60_000 // 6h safety cap
 
   constructor(private init: TransportInit) {
     super()
@@ -202,6 +211,9 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
   }
 
   pushEvent(event: SessionEvent): boolean {
+    // Mark the turn in-flight so the reaper won't kill this session while claude
+    // works (possibly silently, e.g. running Task subagents). Cleared on reply.
+    this.turnStartedAt.set(event.sessionId, Date.now())
     const frame: DispatcherToPlugin = {
       type: 'event',
       session: event.sessionId,
@@ -258,11 +270,13 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
   cancel(sessionId: string): boolean {
     // For channels, "cancel" means kill the long-lived child; next event
     // respawns it via --resume.
+    this.turnStartedAt.delete(sessionId)
     return this.claude.kill(sessionId)
   }
 
   stopSession(sessionId: string): void {
     this.claude.kill(sessionId)
+    this.turnStartedAt.delete(sessionId)
     this.sessionChannelIds.delete(sessionId)
     this.pendingEvents.delete(sessionId)
     this.channelReady.delete(sessionId)
@@ -273,6 +287,20 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
 
   isAlive(sessionId: string): boolean {
     return this.claude.isAlive(sessionId)
+  }
+
+  /** Busy from the moment an inbound event is pushed until the session next
+   *  replies — covers claude working silently while its Task subagents run.
+   *  Capped at MAX_BUSY_MS so a turn that never replies (e.g. claude crashed)
+   *  still becomes reapable instead of pinning the session forever. */
+  isBusy(sessionId: string): boolean {
+    const startedAt = this.turnStartedAt.get(sessionId)
+    if (startedAt === undefined) return false
+    if (Date.now() - startedAt > ChannelsTransport.MAX_BUSY_MS) {
+      this.turnStartedAt.delete(sessionId)
+      return false
+    }
+    return true
   }
 
   isPluginOnline(sessionId: string): boolean {
@@ -364,6 +392,9 @@ export class ChannelsTransport extends EventEmitter implements SessionTransport 
         )
         return
       }
+      // Turn produced output → clear the in-flight marker. (Reap protection
+      // for any silent tail continues via lastActiveAt, bumped on this reply.)
+      this.turnStartedAt.delete(frame.session)
       this.emit('reply', {
         sessionId: frame.session,
         channelId: frame.chat_id,

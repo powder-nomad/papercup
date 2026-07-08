@@ -176,6 +176,14 @@ export interface SessionTransport {
   cancel(sessionId: string): boolean
   stopSession(sessionId: string): void
   isAlive(sessionId: string): boolean
+  /**
+   * True while a turn is actively in-flight — the agent is working (e.g. a
+   * master waiting on subagents), even if it hasn't emitted any output. The
+   * idle reaper skips busy sessions so a long *silent* turn is never killed
+   * mid-work. Distinct from isAlive (process/child exists) — a channels claude
+   * is always "alive" but only "busy" between an inbound event and its reply.
+   */
+  isBusy(sessionId: string): boolean
   isPluginOnline(sessionId: string): boolean
   shutdown(): Promise<void> | void
 }

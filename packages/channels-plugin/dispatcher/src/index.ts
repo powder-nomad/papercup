@@ -871,6 +871,11 @@ async function main(): Promise<void> {
     for (const s of sessions.list()) {
       const transport = transportFor(s)
       if (!transport.isAlive(s.id)) continue
+      // Never reap a session that's mid-turn — the agent may be working
+      // silently (e.g. a master waiting on its Task subagents) with no output
+      // for longer than IDLE_TIMEOUT_MS. isBusy is turn-in-flight, not
+      // last-user-message, so a long quiet turn survives.
+      if (transport.isBusy(s.id)) continue
       const idle = now - s.lastActiveAt
       if (idle <= IDLE_TIMEOUT_MS) continue
       // A session with an active voice connection (or recent audio frames)
