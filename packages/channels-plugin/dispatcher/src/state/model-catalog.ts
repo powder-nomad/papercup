@@ -11,14 +11,15 @@
  * static table is updated, you can still /model name:<id> with any string
  * the underlying CLI accepts; this catalog is for discovery, not validation.
  *
- * Backends not represented here (aider-cli, opencode-cli, crush-cli,
- * amp-cli) take whatever model string their CLI accepts via the backend's
- * own environment variable. /models for those returns a "no curated list"
- * message with a hint.
+ * opencode (opencode-cli / opencode-serve) has curated local-model entries
+ * below (ollama ids in "provider/model" form). Backends still not represented
+ * here (aider-cli, crush-cli, amp-cli) take whatever model string their CLI
+ * accepts via the backend's own env var; /models for those returns a "no
+ * curated list" message with a hint.
  */
 
 export type ModelProvider =
-  | 'anthropic' | 'openai' | 'google' | 'xai' | 'meta' | 'mistral' | 'deepseek' | 'other'
+  | 'anthropic' | 'openai' | 'google' | 'xai' | 'meta' | 'mistral' | 'deepseek' | 'ollama' | 'other'
 
 export interface ModelInfo {
   id: string
@@ -45,6 +46,15 @@ export const STATIC_MODELS: ModelInfo[] = [
   { id: 'llama-3.3-70b',               provider: 'meta',     family: 'llama-3.3',       backends: ['openai-compat'], notes: 'via Groq/Together/Ollama base URL' },
   { id: 'deepseek-v3',                 provider: 'deepseek', family: 'deepseek-v3',     backends: ['openai-compat'] },
   { id: 'mistral-large',               provider: 'mistral',  family: 'mistral-large',   backends: ['openai-compat'] },
+  // opencode local models (via ollama). IDs are "providerID/modelID" — the
+  // format opencode expects (see parseModel in opencode-serve-backend.ts).
+  // These are the operator's local ollama models; edit to match `ollama list`.
+  // opencode's agent loop is tool-heavy: e4b is the lightest that still works;
+  // 12b/qwen3-14b are more reliable for complex tool orchestration.
+  { id: 'ollama/gemma4-e4b',           provider: 'ollama',   family: 'gemma4',          backends: ['opencode-cli', 'opencode-serve'], notes: 'local; lightest, ~8s/turn' },
+  { id: 'ollama/gemma4-12b',           provider: 'ollama',   family: 'gemma4',          backends: ['opencode-cli', 'opencode-serve'], notes: 'local; solid tool-use' },
+  { id: 'ollama/gemma4-31b',           provider: 'ollama',   family: 'gemma4',          backends: ['opencode-cli', 'opencode-serve'], notes: 'local; largest' },
+  { id: 'ollama/qwen3-14b',            provider: 'ollama',   family: 'qwen3',           backends: ['opencode-cli', 'opencode-serve'], notes: 'local; strong tool-caller' },
 ]
 
 /** Backends covered by the static catalog. Operators using a different
